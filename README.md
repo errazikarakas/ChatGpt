@@ -1,2 +1,1 @@
-# ChatGpt
-test
+karakas.com.tr

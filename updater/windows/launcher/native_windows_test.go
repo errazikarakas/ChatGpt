@@ -26,6 +26,7 @@ func auditedWindowsPlatform(t *testing.T, root string) *windowsPlatform {
 	p := newWindowsPlatform(root)
 	p.Owner = nativeTestOwner(t)
 	p.BeforeLaunch = func(path string) {
+		ciCatalog(t, path)
 		audit := os.Getenv("BAKIM_CI_PENDING")
 		if audit == "" {
 			t.Fatal("CI pending launch audit missing")
@@ -46,6 +47,21 @@ func auditedWindowsPlatform(t *testing.T, root string) *windowsPlatform {
 	}
 	return p
 }
+
+// Catalog registration belongs only to the disposable Windows integration lab.
+// It never changes the executable bytes or the production launch policy.
+func ciCatalog(t *testing.T, path string) {
+	t.Helper()
+	script := os.Getenv("BAKIM_CI_CATALOG_SCRIPT")
+	if script == "" {
+		return
+	}
+	command := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "Add", "-File", path, "-ProofDirectory", filepath.Dir(os.Getenv("BAKIM_CI_PENDING")))
+	if result, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("ephemeral publisher catalog registration failed: %v\n%s", err, result)
+	}
+}
+
 func nativeTestOwner(t *testing.T) uintptr {
 	t.Helper()
 	created := make(chan uintptr, 1)

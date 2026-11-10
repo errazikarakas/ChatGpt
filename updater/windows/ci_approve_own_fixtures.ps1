@@ -126,6 +126,19 @@ function Pending-Match([string]$DialogText){
   if(-not (Trusted-Caller $callerId)){$script:pendingReason='pending-caller-not-trusted';return @()}
   $full=[BakimCiConsent]::LongPath([IO.Path]::GetFullPath([string]$pending.path))
   $same=@($script:candidates | Where-Object {$_.path -ieq $full -and $_.sha256 -ieq $pending.sha256})
+  # A freshly staged executable may precede the periodic directory inventory.
+  # The private test driver's exact file, known hash, live identity and TTL are
+  # checked independently; never approve an unknown payload from a dialog name.
+  if($same.Count -eq 0 -and $script:knownHashes.ContainsKey($pending.sha256.ToLowerInvariant()) -and (Test-Path -LiteralPath $full -PathType Leaf)){
+   $tempRoot=[BakimCiConsent]::LongPath([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\')+'\'
+   $workspaceRoot=[BakimCiConsent]::LongPath([IO.Path]::GetFullPath($PSScriptRoot)).TrimEnd('\')+'\'
+   $appRoot=[BakimCiConsent]::LongPath([IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'BakimTRYardim/Launcher'))).TrimEnd('\')+'\'
+   $underKnownRoot=$full.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -or $full.StartsWith($workspaceRoot,[StringComparison]::OrdinalIgnoreCase) -or $full.StartsWith($appRoot,[StringComparison]::OrdinalIgnoreCase)
+   if($underKnownRoot -and (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash -ieq $pending.sha256){
+    $same=@(@{path=$full;short=[BakimCiConsent]::ShortPath($full);name=[IO.Path]::GetFileName($full);sha256=$pending.sha256.ToLowerInvariant()})
+    $script:candidates+= $same
+   }
+  }
   if($same.Count -eq 0 -or -not $script:knownHashes.ContainsKey($pending.sha256.ToLowerInvariant())){$script:pendingReason='pending-path-or-known-hash-mismatch';return @()}
   if((Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash -ine $pending.sha256){$script:pendingReason='pending-file-hash-mismatch';return @()}
   $names=@($same | Where-Object {$DialogText -match ('(?i)(?<![A-Za-z0-9_-])'+[regex]::Escape($_.name)+'(?![A-Za-z0-9_.-])')})
@@ -172,7 +185,7 @@ function Write-Snapshot([string]$Reason){
   $records+=$row
   if($records.Count -ge 100){break}
  }
- $value=@{reason=$Reason;inputDesktop=[BakimCiConsent]::InputDesktopName();utc=[datetime]::UtcNow.ToString('o');pendingReason=$script:pendingReason;knownCandidateCount=$script:candidates.Count;windows=$records}
+ $value=@{reason=$Reason;inputDesktop=[BakimCiConsent]::InputDesktopName();utc=[datetime]::UtcNow.ToString('o');pendingReason=$script:pendingReason;knownCandidateCount=$script:candidates.Count;knownHashCount=$script:knownHashes.Count;windows=$records}
  $json=$value | ConvertTo-Json -Depth 9
  $json | Set-Content -LiteralPath $windowFile -Encoding UTF8
  $json | Set-Content -LiteralPath (Join-Path $ProofDirectory ('ci-consent-snapshot-{0:D2}.json' -f $script:snapshots)) -Encoding UTF8

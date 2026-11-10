@@ -16,6 +16,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 20
     env:
+      BAKIM_NATIVE_TESTS: '1'
       PYTHONUTF8: '1'
       PYTHONIOENCODING: utf-8
     steps:
@@ -39,6 +40,9 @@ jobs:
       run: ./updater/windows/sign_windows.ps1 -File updater/windows/release/Bakim-TR-Yardim.exe
     - name: Real signed-update, rollback, mutex, preserved-session, MOTW and Unicode child GUI tests
       run: ./updater/windows/smoke_windows.ps1
+    - name: Remove only this throwaway VM's ephemeral lab publisher and catalogs
+      if: always()
+      run: ./updater/windows/ci_trusted_publisher.ps1 -Action Cleanup -ProofDirectory updater/windows/proof
     - name: Record final build hashes and source provenance
       run: '$exe=''updater/windows/release/Bakim-TR-Yardim.exe''
 

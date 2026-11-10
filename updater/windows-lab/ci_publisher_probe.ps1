@@ -12,7 +12,7 @@ $work=Join-Path $WindowsSource ('fixtures\publisher-probe-'+$env:GITHUB_RUN_ID)
 $null=New-Item -ItemType Directory -Force -Path $work
 $pwsh=Join-Path $PSHOME 'pwsh.exe'
 if(-not(Test-Path -LiteralPath $pwsh)){throw 'Run this CI probe with PowerShell 7.'}
-$report=[ordered]@{labOnly=$true;runId=$env:GITHUB_RUN_ID;policyChanged=$false;motwChanged=$false;privateKeyExported=$false;guiLaunched=$false;calls=@();errors=@();embeddedCopyVerified=$false;cleanupSucceeded=$false}
+$report=[ordered]@{labOnly=$true;runId=$env:GITHUB_RUN_ID;productionSecuritySettingsChanged=$false;ciTemporaryTrustStoresChanged=$true;smartScreenDefenderPoliciesChanged=$false;motwChanged=$false;privateKeyExported=$false;guiLaunched=$false;calls=@();errors=@();embeddedCopyVerified=$false;cleanupSucceeded=$false}
 $reportPath=Join-Path $ProofDirectory 'publisher-probe.json'
 function Save-Report { [IO.File]::WriteAllText($reportPath,($script:report|ConvertTo-Json -Depth 10),[Text.Encoding]::UTF8) }
 function Quote-Arg([string]$a){return '"'+[regex]::Replace([regex]::Replace($a,'(\\*)"','$1$1\"'),'(\\+)$','$1$1')+'"'}
@@ -88,8 +88,11 @@ try{
  if($catalog.name -notmatch ('^bakim-ci-'+$state.nonce+'-[a-f0-9]{32}\.cat$') -or [IO.Path]::GetFullPath($catalog.path) -ne (Join-Path $labRoot $catalog.name)){throw 'Owned catalog mismatch.'}
  foreach($probe in @(
   @{name='catalog-explicit';args=@('verify','/v','/pa','/c',$catalog.path,$good)},
-  @{name='catalog-default-db';args=@('verify','/v','/a','/ad','/hash','SHA256','/pa',$good)},
-  @{name='catalog-system-db';args=@('verify','/v','/a','/as','/hash','SHA256','/pa',$good)}
+  @{name='catalog-explicit-sha256';args=@('verify','/v','/pa','/hash','SHA256','/c',$catalog.path,$good)},
+  @{name='catalog-default-db-sha256';args=@('verify','/v','/ad','/hash','SHA256','/pa',$good)},
+  @{name='catalog-system-db-sha256';args=@('verify','/v','/as','/hash','SHA256','/pa',$good)},
+  @{name='catalog-default-db-sha1';args=@('verify','/v','/ad','/hash','SHA1','/pa',$good)},
+  @{name='catalog-system-db-sha1';args=@('verify','/v','/as','/hash','SHA1','/pa',$good)}
  )){try{$null=Run-Call -Name $probe.name -Exe $state.signTool -Arguments $probe.args}catch{$report.errors+=($probe.name+': '+$_.Exception.Message)}}
  $report.catalogGetAuthenticode=Signature-Probe -Name 'catalog-GetAuthenticodeSignature' -Path $good
  if((Get-FileHash -LiteralPath $good -Algorithm SHA256).Hash.ToLowerInvariant() -ne $originalHash){throw 'Catalog operation modified original fixture.'}

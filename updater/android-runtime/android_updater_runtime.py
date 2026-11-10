@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Disposable AVD only. Secrets and production-signed test APKs never become artifacts."""
-import argparse,hashlib,json,os,pathlib,re,subprocess,tempfile,time,urllib.request,urllib.parse,xml.etree.ElementTree as ET
+import argparse,hashlib,json,os,pathlib,re,subprocess,tempfile,time,unicodedata,urllib.request,urllib.parse,xml.etree.ElementTree as ET
 p=argparse.ArgumentParser();p.add_argument('--bootstrap-url',required=True);p.add_argument('--private-key',type=pathlib.Path,required=True)
 p.add_argument('--fixture-sha256',required=True);p.add_argument('--initial-sha256',required=True);p.add_argument('--output',type=pathlib.Path,required=True)
 p.add_argument('--initial-version',type=int,default=2026113002);p.add_argument('--target-version',type=int,default=2026113003);p.add_argument('--timeout',type=int,default=300)
@@ -26,9 +26,10 @@ def tap(node):
  if not m:return False
  x,y,xx,yy=map(int,m.groups());adb('shell','input','tap',(x+xx)//2,(y+yy)//2);return True
 def button(items,labels):
+ def norm(text):return ''.join(c for c in unicodedata.normalize('NFKD',text).casefold() if not unicodedata.combining(c)).strip()
  for label in labels:
   for n in items:
-   if n.get('enabled')=='true' and n.get('text','').strip().casefold()==label.casefold():
+   if n.get('enabled')=='true' and norm(n.get('text',''))==norm(label):
     return tap(n)
  return False
 def launch():adb('shell','am','start','-W','-n',MAIN)
@@ -71,28 +72,35 @@ try:
     output.write(chunk);h.update(chunk)
   if h.hexdigest()!=a.initial_sha256:raise RuntimeError('Private initial APK checksum mismatch')
   report['initialApkSha256Matched']=True
+  report['lastStep']='install_initial_apk'
   adb('wait-for-device',timeout=60);adb('install','-r','-t',apk,timeout=120)
   if version()!=a.initial_version:raise RuntimeError('Initial version incorrect')
   report['initialVersionConfirmed']=True
+  report['lastStep']='create_private_fixture_cache'
   adb('shell','run-as',PACKAGE,'mkdir','-p','cache/bakim-updates')
-  adb('shell','run-as',PACKAGE,'sh','-c','cat > cache/bakim-updates/fixture.token',input=token.encode())
-  launch();phase='decline_app';phase_started=time.monotonic();last_action=0;grant_return=False
+  # tee receives bytes on stdin; no nested adb-shell redirection or token argv.
+  # Its echo is captured privately by adb(), never written to the job log.
+  report['lastStep']='seed_private_fixture_token'
+  adb('shell','run-as',PACKAGE,'tee','cache/bakim-updates/fixture.token',input=token.encode())
+  if hashlib.sha256(adb('shell','run-as',PACKAGE,'cat','cache/bakim-updates/fixture.token').strip().encode()).hexdigest()!=a.fixture_sha256:raise RuntimeError('Private fixture injection failed')
+  report['privateFixtureInjected']=True;report['lastStep']='normal_system_permission_flow'
+  launch();phase='decline_permission';phase_started=time.monotonic();last_action=0
   while time.monotonic()-phase_started<a.timeout:
    if time.monotonic()-last_action<2:time.sleep(1);continue
    items=nodes();last_action=time.monotonic();texts=[n.get('text','').strip().casefold() for n in items]
-   if phase=='decline_app':
-    if button(items,['Şimdi değil']):
-     report['applicationDeclineUsed']=True;time.sleep(2)
-     report['applicationDeclinePreservedVersion']=version()==a.initial_version
-     report['applicationDeclineReturnedToCurrentApp']=resumed()
+   switches=[n for n in items if n.get('checkable')=='true' and ('switch' in n.get('class','').lower() or 'switch' in n.get('resource-id','').lower())]
+   in_settings=any(n.get('package')=='com.android.settings' for n in items)
+   if phase=='decline_permission':
+    if in_settings and switches:
+     report['normalUnknownSourcesSettingsShown']=True
+     adb('shell','input','keyevent','KEYCODE_BACK');time.sleep(2)
+     report['sourcePermissionDeclinePreservedVersion']=version()==a.initial_version
+     report['sourcePermissionDeclineReturnedToCurrentApp']=resumed()
      reset_defer();phase='decline_os';phase_started=time.monotonic()
    else:
-    if button(items,['İzni aç']):report['normalUnknownSourcesExplanationShown']=True;grant_return=True;continue
-    if grant_return:
-     switches=[n for n in items if n.get('checkable')=='true' and ('switch' in n.get('class','').lower() or 'switch' in n.get('resource-id','').lower())]
-     if switches:
-      if switches[0].get('checked')!='true':tap(switches[0]);report['unknownSourcesGrantedThroughSystemUi']=True;time.sleep(1)
-      adb('shell','input','keyevent','KEYCODE_BACK');grant_return=False;continue
+    if in_settings and switches:
+     if switches[0].get('checked')!='true':tap(switches[0]);report['unknownSourcesGrantedThroughSystemUi']=True;time.sleep(1)
+     adb('shell','input','keyevent','KEYCODE_BACK');continue
     is_installer=any('packageinstaller' in n.get('package','') or 'permissioncontroller' in n.get('package','') for n in items)
     has_update=any(t in ('update','güncelle','install','yükle') for t in texts)
     if is_installer and has_update:
@@ -109,7 +117,10 @@ try:
      # No adb launch is allowed here: this verifies the actual callback restart.
      report['automaticRelaunchObserved']=resumed()
      prefs=adb('shell','run-as',PACKAGE,'cat','shared_prefs/bakim-yardim-updater.xml',check=False)
-     report['nativeSuccessCallbackVerifiedVersion']=f'name="lastInstalledVersion" value="{a.target_version}"' in prefs
+     try:
+      pref=ET.fromstring(prefs).find("long[@name='lastInstalledVersion']")
+      report['nativeSuccessCallbackVerifiedVersion']=pref is not None and pref.get('value')==str(a.target_version)
+     except ET.ParseError:report['nativeSuccessCallbackVerifiedVersion']=False
      if report['automaticRelaunchObserved'] and report['nativeSuccessCallbackVerifiedVersion']:break
    time.sleep(1)
   else:raise RuntimeError('Normal Android update flow did not finish before the bounded deadline')
@@ -122,7 +133,7 @@ finally:
  except Exception:pass
  token=None
  report['errorType']=error;report['elapsedSeconds']=round(time.monotonic()-started,1)
- required=['initialApkSha256Matched','initialVersionConfirmed','applicationDeclinePreservedVersion','applicationDeclineReturnedToCurrentApp','normalUnknownSourcesExplanationShown','unknownSourcesGrantedThroughSystemUi','normalAndroidInstallerShown','systemDeclinePreservedVersion','systemDeclineReturnedToCurrentApp','actualSystemInstallConfirmed','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
+ required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','normalAndroidInstallerShown','systemDeclinePreservedVersion','systemDeclineReturnedToCurrentApp','actualSystemInstallConfirmed','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
  report['ok']=error is None and all(report.get(k) for k in required)
  (a.output/'android-updater-proof.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps(report,ensure_ascii=False))

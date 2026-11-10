@@ -2,7 +2,6 @@ package com.carriez.flutter_hbb
 
 import android.app.Activity
 import android.app.ActivityOptions
-import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageInstaller
@@ -43,14 +42,9 @@ class BakimUpdateActivity : Activity() {
 
     private fun prepare() {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
-            AlertDialog.Builder(this).setTitle("Güncelleme hazır")
-                .setMessage("Android, güncellemeyi kurabilmek için bu uygulamaya bir kez izin vermenizi istiyor.")
-                .setPositiveButton("İzni aç") { _, _ ->
-                    try { startActivityForResult(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")), 901) }
-                    catch (_: Exception) { continueCurrent(defer = true) }
-                }
-                .setNegativeButton("Şimdi değil") { _, _ -> continueCurrent(defer = true) }
-                .setOnCancelListener { continueCurrent(defer = true) }.show()
+            Toast.makeText(this, "Güncelleme için Android'de bu kaynağa izin verin.", Toast.LENGTH_LONG).show()
+            try { startActivityForResult(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")), 901) }
+            catch (_: Exception) { continueCurrent(defer = true) }
             return
         }
         thread(name = "bakim-apk-verifier") {

@@ -106,7 +106,9 @@ try:
     except ET.ParseError:report['nativeSuccessCallbackVerifiedVersion']=False
     report['selfUpdateCompletedWithoutInstallConfirmation']=not report.get('actualSystemInstallConfirmed',False)
     report['frameworkUpdateMode']='no_additional_user_action' if report['selfUpdateCompletedWithoutInstallConfirmation'] else 'pending_user_action_fallback'
-    if report['automaticRelaunchObserved'] and report['nativeSuccessCallbackVerifiedVersion']:break
+    own=adb('shell','run-as',PACKAGE,'cat','app_flutter/RustDesk2.toml',check=False)
+    report['ownServerConfigPreserved']=all(value in own for value in ('xn--bakm-nza.tr:21116','xn--bakm-nza.tr:21117','v15Oj1NdzRE32xyZRKLlk2sfrP8AOLxx5ZxEV3JqYvM='))
+    if report['automaticRelaunchObserved'] and report['nativeSuccessCallbackVerifiedVersion'] and report['ownServerConfigPreserved']:break
    if time.monotonic()-last_action<2:time.sleep(1);continue
    items=nodes();last_action=time.monotonic();texts=[n.get('text','').strip().casefold() for n in items]
    report['lastPhase']=phase
@@ -157,16 +159,6 @@ try:
      report['normalAndroidInstallerShown']=True
      if phase=='update' and button(items,['Update','Güncelle','Install','Yükle']):
       report['actualSystemInstallConfirmed']=True;phase='installed';phase_started=time.monotonic();continue
-    if phase=='installed' and version()==a.target_version:
-     report['targetVersionInstalled']=True
-     # No adb launch is allowed here: this verifies the actual callback restart.
-     report['automaticRelaunchObserved']=resumed()
-     prefs=adb('shell','run-as',PACKAGE,'cat','shared_prefs/bakim-yardim-updater.xml',check=False)
-     try:
-      pref=ET.fromstring(prefs).find("long[@name='lastInstalledVersion']")
-      report['nativeSuccessCallbackVerifiedVersion']=pref is not None and pref.get('value')==str(a.target_version)
-     except ET.ParseError:report['nativeSuccessCallbackVerifiedVersion']=False
-     if report['automaticRelaunchObserved'] and report['nativeSuccessCallbackVerifiedVersion']:break
    time.sleep(1)
   else:raise RuntimeError('Normal Android update flow did not finish before the bounded deadline')
   report['publisherSignatureAcceptedByAndroidUpdate']=report.get('targetVersionInstalled',False)
@@ -179,8 +171,11 @@ finally:
    report[key]=int(value) if value.isdigit() else 0
   pref=adb('shell','run-as',PACKAGE,'cat','shared_prefs/bakim-yardim-updater.xml',check=False)
   try:
-   node=ET.fromstring(pref).find("long[@name='deferUntil']")
+   root=ET.fromstring(pref);node=root.find("long[@name='deferUntil']")
    report['nativeUpdateDeferredUntilFuture']=node is not None and int(node.get('value','0'))>int(time.time()*1000)
+   for name,key in [('lastUpdateStage','nativeLastStage'),('lastUpdateError','nativeLastError'),('updateTrace','nativeStageTrace')]:
+    value=root.find("string[@name='"+name+"']")
+    if value is not None:report[key]=value.text
   except (ET.ParseError,ValueError):report['nativeUpdateDeferredUntilFuture']=False
  except Exception:pass
  try:
@@ -196,7 +191,7 @@ finally:
  except Exception:pass
  token=None
  report['errorType']=error;report['elapsedSeconds']=round(time.monotonic()-started,1)
- required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
+ required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','ownServerConfigPreserved','publisherSignatureAcceptedByAndroidUpdate']
  report['ok']=error is None and all(report.get(k) for k in required)
  (a.output/'android-updater-proof.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps(report,ensure_ascii=False))

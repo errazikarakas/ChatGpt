@@ -17,6 +17,8 @@ public class BakimWindows {
  [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int n);
  [DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out Rect r);
+ [DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")]public static extern void mouse_event(uint f,uint x,uint y,uint data,UIntPtr extra);
  public struct Rect {public int Left,Top,Right,Bottom;}
  public static IntPtr RemoteWindow(){IntPtr result=IntPtr.Zero;EnumWindows((h,p)=>{var t=new StringBuilder(512);GetWindowText(h,t,t.Capacity);var s=t.ToString();if(IsWindowVisible(h)&&(s.Contains("Remote Desktop")||s.Contains("Uzak Masaüstü")))result=h;return true;},IntPtr.Zero);return result;}
 }
@@ -43,10 +45,14 @@ Start-Sleep 100
 [BakimWindows]::ShowWindow($remote,3)|Out-Null
 [BakimWindows]::SetForegroundWindow($remote)|Out-Null
 Start-Sleep 3
-[System.Windows.Forms.SendKeys]::SendWait('BAKIMTR-CI-REMOTE-CONTROL-VERIFIED{ENTER}')
-Start-Sleep 5
 $r=New-Object BakimWindows+Rect
 if(-not [BakimWindows]::GetWindowRect($remote,[ref]$r)){throw 'Remote window bounds unavailable'}
+[BakimWindows]::SetCursorPos([int](($r.Left+$r.Right)/2),[int](($r.Top+$r.Bottom)/2))|Out-Null
+[BakimWindows]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+[BakimWindows]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+Start-Sleep 1
+[System.Windows.Forms.SendKeys]::SendWait('BAKIMTR-CI-REMOTE-CONTROL-VERIFIED{ENTER}')
+Start-Sleep 5
 $width=[Math]::Max(1,$r.Right-$r.Left);$height=[Math]::Max(1,$r.Bottom-$r.Top)
 $bitmap=New-Object System.Drawing.Bitmap($width,$height)
 $graphics=[System.Drawing.Graphics]::FromImage($bitmap);$graphics.CopyFromScreen($r.Left,$r.Top,0,0,$bitmap.Size)

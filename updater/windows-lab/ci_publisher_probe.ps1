@@ -26,8 +26,8 @@ function Run-Call([string]$Name,[string]$Exe,[string[]]$Arguments,[int]$TimeoutS
   $null=$proc.Handle
   if(-not $proc.WaitForExit($TimeoutSeconds*1000)){$row.timedOut=$true;try{$proc.Kill();$null=$proc.WaitForExit(5000)}catch{};throw ('Deadline: '+$Name)}
   $proc.Refresh();$row.exitCode=$proc.ExitCode
-  if(Test-Path -LiteralPath $stdout){$row.stdout=([string](Get-Content -LiteralPath $stdout -Raw)).Trim()}
-  if(Test-Path -LiteralPath $stderr){$row.stderr=([string](Get-Content -LiteralPath $stderr -Raw)).Trim()}
+  if(Test-Path -LiteralPath $stdout){$row.stdout=[IO.File]::ReadAllText($stdout).Trim()}
+  if(Test-Path -LiteralPath $stderr){$row.stderr=[IO.File]::ReadAllText($stderr).Trim()}
   if($row.stdout.Length -gt 6000){$row.stdout=$row.stdout.Substring(0,6000)}
   if($row.stderr.Length -gt 2500){$row.stderr=$row.stderr.Substring(0,2500)}
   if($row.exitCode -ne 0){throw ('Call failed: '+$Name+', exit='+$row.exitCode)}

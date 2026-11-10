@@ -4,7 +4,7 @@ New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
 $out=(Resolve-Path $OutputDirectory).Path;$exe=(Resolve-Path $Executable).Path
 $target=Invoke-RestMethod -Uri 'https://xn--bakm-nza.tr/assets/support/test-target.json' -TimeoutSec 20
 $id=[string]$target.targetId
-if($id -notmatch '^\d{6,14}$'){throw 'No isolated RustDesk fixture ID available'}
+if($id -notmatch '^[A-Za-z0-9_-]{6,40}$'){throw 'No isolated RustDesk fixture ID available'}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -26,7 +26,7 @@ $remote=[IntPtr]::Zero
 for($i=0;$i -lt 60;$i++){Start-Sleep 2;$remote=[BakimWindows]::RemoteWindow();if($remote -ne [IntPtr]::Zero){break}}
 if($remote -eq [IntPtr]::Zero){throw 'Remote desktop UI did not appear'}
 # Our server operator accepts only the isolated fixture's request. No password is sent or logged.
-Start-Sleep 30
+Start-Sleep 100
 [BakimWindows]::ShowWindow($remote,3)|Out-Null
 [BakimWindows]::SetForegroundWindow($remote)|Out-Null
 Start-Sleep 3

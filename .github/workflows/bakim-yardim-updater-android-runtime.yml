@@ -1,0 +1,82 @@
+name: Bakım.TR Yardım actual Android self-update
+'on':
+  push:
+    branches: [bakim-yardim-build]
+    paths:
+      - updater/android-runtime-trigger.json
+      - .github/workflows/bakim-yardim-updater-android-runtime.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: bakim-yardim-android-updater-runtime
+  cancel-in-progress: true
+jobs:
+  android-updater-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate public test fingerprints
+        run: |
+          python3 - <<'PY'
+          import json,re,os
+          trigger=json.load(open('updater/android-runtime-trigger.json'))
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+              for key,env in [('initialSha256','BAKIM_INITIAL_SHA256'),('fixtureSha256','BAKIM_FIXTURE_SHA256')]:
+                  value=trigger[key]
+                  assert re.fullmatch('[0-9a-f]{64}',value)
+                  out.write(env+'='+value+'\n')
+          PY
+      - name: Generate disposable runner-only RSA private key
+        run: |
+          umask 077
+          mkdir -p bootstrap
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$RUNNER_TEMP/bakim-update-private.pem" 2>/dev/null
+          openssl pkey -in "$RUNNER_TEMP/bakim-update-private.pem" -pubout -out bootstrap/public.pem
+      - name: Publish only the ephemeral public key for the verified root handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: bakim-android-updater-ephemeral-public-key
+          path: bootstrap/public.pem
+          retention-days: 7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Enable KVM for the disposable AVD
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Decline safely, then install the actual signed update through Android UI
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: >-
+            python3 updater/android-runtime/android_updater_runtime.py
+            --bootstrap-url "https://xn--bakm-nza.tr/assets/support/android-update-bootstrap-${GITHUB_RUN_ID}.bin"
+            --private-key "$RUNNER_TEMP/bakim-update-private.pem"
+            --fixture-sha256 "$BAKIM_FIXTURE_SHA256"
+            --initial-sha256 "$BAKIM_INITIAL_SHA256"
+            --output artifacts/android-updater --timeout 300
+      - name: Retain only the sanitized update proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bakim-android-updater-proof
+          path: artifacts/android-updater/*.json
+          retention-days: 30
+      - name: Remove the ephemeral runner private key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/bakim-update-private.pem"

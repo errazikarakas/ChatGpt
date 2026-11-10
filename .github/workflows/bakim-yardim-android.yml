@@ -1,0 +1,99 @@
+name: Bakım.TR Yardım Android
+'on':
+  push:
+    branches:
+    - bakim-yardim-build
+    paths:
+    - ci/android*
+    - .github/workflows/bakim-yardim-android.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: bakim-yardim-android
+  cancel-in-progress: true
+jobs:
+  android:
+    name: Bakım.TR Yardım Android arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: rustdesk
+    steps:
+    - name: Branding source
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Exact upstream source
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+        submodules: recursive
+        path: rustdesk
+        persist-credentials: false
+    - name: Restore bridge from pinned original build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "for i in $(seq 1 80); do\n  if gh run download 42887318323 --repo errazikarakas/ChatGpt --name bridge-artifact --dir .; then break; fi\n  sleep 15\ndone\ntest -f flutter/lib/generated_bridge.dart"
+    - name: Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Python for verified dependency and icon preparation
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Android SDK
+      uses: android-actions/setup-android@v3
+    - name: Android platform and build tools
+      run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+    - name: Flutter matching upstream mobile release
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: 3.24.5
+        channel: stable
+        cache: true
+    - name: Prepare exact official native engine and branded shell
+      run: 'python3 -m pip install Pillow
+
+        python3 ../ci/android_prepare_native.py --source . --output native-input
+
+        python3 ../ci/apply_branding.py --source . --overlay ..
+
+        python3 ../ci/android_patch.py --source . --logo ../branding/logo.png --upstream-apk native-input/upstream-1.5.1-aarch64.apk
+
+        '
+    - name: Upstream Flutter compatibility patch
+      run: 'git -C "$(dirname "$(dirname "$(command -v flutter)")")" apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+        flutter config --no-analytics
+
+        '
+    - name: Build real Android application
+      run: 'cd flutter
+
+        flutter pub get
+
+        flutter build apk --release --target-platform android-arm64 --split-per-abi --build-name 1.5.1 --build-number 2026111001
+
+        mkdir -p ../artifacts
+
+        cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ../artifacts/Bakim-TR-Yardim-android-arm64-ci.apk
+
+        cp ../bakim-android-build-manifest.json ../artifacts/
+
+        sha256sum ../artifacts/*.apk > ../artifacts/SHA256SUMS-ci
+
+        '
+    - name: Upload APK for private release signing on Bakım.TR server
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-android-arm64
+        path: rustdesk/artifacts/*
+        retention-days: 14
+    if: ${{ contains(github.event.head_commit.message, '[android-only]') || github.event_name == 'workflow_dispatch' }}

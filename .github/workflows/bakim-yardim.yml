@@ -109,6 +109,7 @@ jobs:
     defaults:
       run:
         working-directory: rustdesk
+    if: ${{ !contains(github.event.head_commit.message, '[android-only]') }}
   windows:
     name: Windows portable x64
     runs-on: windows-2022
@@ -242,6 +243,7 @@ jobs:
         path: rustdesk/out
         if-no-files-found: error
         retention-days: 30
+    if: ${{ !contains(github.event.head_commit.message, '[android-only]') }}
   android:
     name: Bakım.TR Yardım Android arm64
     needs:
@@ -264,11 +266,11 @@ jobs:
         submodules: recursive
         path: rustdesk
         persist-credentials: false
-    - name: Restore matching Flutter Rust bridge
-      uses: actions/download-artifact@v4
-      with:
-        name: bridge-artifact
-        path: rustdesk
+    - name: Restore bridge from pinned original build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "for i in $(seq 1 80); do\n  if gh run download 42887318323 --repo errazikarakas/ChatGpt --name bridge-artifact --dir .; then break; fi\n  sleep 15\ndone\ntest -f flutter/lib/generated_bridge.dart"
     - name: Java 17
       uses: actions/setup-java@v4
       with:
@@ -295,7 +297,7 @@ jobs:
 
         python3 ../ci/apply_branding.py --source . --overlay ..
 
-        python3 ../ci/android_patch.py --source . --logo ../branding/bakim-tr-yardim-master.png --upstream-apk native-input/upstream-1.5.1-aarch64.apk
+        python3 ../ci/android_patch.py --source . --logo ../branding/logo.png --upstream-apk native-input/upstream-1.5.1-aarch64.apk
 
         '
     - name: Upstream Flutter compatibility patch
@@ -326,3 +328,4 @@ jobs:
         name: bakim-yardim-android-arm64
         path: rustdesk/artifacts/*
         retention-days: 14
+    if: ${{ !contains(github.event.head_commit.message, '[android-only]') }}

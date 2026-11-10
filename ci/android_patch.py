@@ -10,7 +10,7 @@ OPTIONS={
  'custom-rendezvous-server':'xn--bakm-nza.tr:21116',
  'relay-server':'xn--bakm-nza.tr:21117',
  'key':'v15Oj1NdzRE32xyZRKLlk2sfrP8AOLxx5ZxEV3JqYvM=',
- 'access-mode':'custom','approve-mode':'click',
+ 'access-mode':'custom','approve-mode':'password-click',
  'enable-keyboard':'Y','enable-clipboard':'Y','enable-file-transfer':'N',
  'enable-audio':'N','enable-camera':'N','enable-terminal':'N',
  'enable-tunnel':'N','enable-remote-printer':'N',

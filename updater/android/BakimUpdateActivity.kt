@@ -41,6 +41,13 @@ class BakimUpdateActivity : Activity() {
     override fun onSaveInstanceState(out: Bundle) { out.putInt("sessionId", sessionId); super.onSaveInstanceState(out) }
     override fun onResume() { super.onResume(); updateVisible = true }
     override fun onPause() { updateVisible = false; super.onPause() }
+    override fun onUserLeaveHint() {
+        // An explicit Home/app-switch action ends permission to resume the
+        // foreground update. Ordinary package-replacement teardown does not.
+        updateVisible = false
+        BakimUpdater.preferences(this).edit().putBoolean("pendingForeground", false).commit()
+        super.onUserLeaveHint()
+    }
     override fun onDestroy() { handler.removeCallbacks(timeout); super.onDestroy() }
 
     private fun prepare() {

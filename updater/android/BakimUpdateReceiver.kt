@@ -47,7 +47,17 @@ class BakimUpdateReceiver : BroadcastReceiver() {
         }
         if (status != PackageInstaller.STATUS_SUCCESS) {
             BakimUpdater.trace(context, "native_install_declined_or_failed")
-            prefs.edit().remove("pendingSessionId").remove("pendingVersion").apply()
+            val wasForeground = prefs.getBoolean("pendingForeground", false)
+            prefs.edit().remove("pendingSessionId").remove("pendingVersion")
+                .putLong("deferUntil", System.currentTimeMillis() + 60 * 60 * 1000L).apply()
+            // A terminal failure must release the still-visible preparation
+            // page immediately; do not leave it waiting for the timeout.
+            if (wasForeground) try {
+                context.startActivity(Intent(context, BakimUpdateActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra("version", expectedVersion).putExtra("sessionId", sessionId)
+                    .putExtra(PackageInstaller.EXTRA_STATUS, status))
+            } catch (error: Exception) { BakimUpdater.trace(context, "failed_update_ui_resume_unavailable", error) }
             return
         }
         try {

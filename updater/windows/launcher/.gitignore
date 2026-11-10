@@ -3,3 +3,6 @@
 /*.res
 /*.exe
 /resource-icon.ico
+
+/resource-icon*.png
+/winres/

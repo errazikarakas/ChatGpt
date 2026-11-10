@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,50 @@ import (
 	"testing"
 	"time"
 )
+
+type rejectedLaunch struct{ *fakePlatform }
+
+func (p *rejectedLaunch) Launch(path string) error {
+	p.fakePlatform.Launch(path)
+	return errUserDeclined
+}
+
+type invalidAtomicState struct{ *fakePlatform }
+
+func (p *invalidAtomicState) AtomicReplace(from, to string) error {
+	if filepath.Base(to) == "current.json" {
+		return errors.New("fixture state storage unavailable")
+	}
+	return p.fakePlatform.AtomicReplace(from, to)
+}
+
+func TestWindowsSecurityDeclineDoesNotRetryOrBlacklistVersion(t *testing.T) {
+	f := newTestFeed(t)
+	u, p := newTestUpdater(t, f)
+	u.OS = &rejectedLaunch{p}
+	err := u.Run()
+	if !errors.Is(err, errUserDeclined) {
+		t.Fatal("Windows user decision was not propagated")
+	}
+	s := u.state()
+	if len(p.launched) != 1 || s.Current != seedVersionCode || s.Staged != seedVersionCode+1 || s.Failed != 0 {
+		t.Fatal("security decline retried another executor/version or permanently blacklisted a declined update")
+	}
+}
+func TestExistingGuiCannotAckBeforeCoreStateValidation(t *testing.T) {
+	f := newTestFeed(t)
+	u, p := newTestUpdater(t, f)
+	p.busy.Store(true)
+	u.OS = &invalidAtomicState{p}
+	acknowledgements := 0
+	u.OnReady = func() { acknowledgements++ }
+	if err := u.Run(); err == nil {
+		t.Fatal("startup storage failure was silently accepted")
+	}
+	if acknowledgements != 0 {
+		t.Fatal("existing GUI was used as an ACK before child core startup validated its state")
+	}
+}
 
 func signedManifest(t *testing.T, key ed25519.PrivateKey, m Manifest) []byte {
 	t.Helper()
@@ -73,13 +118,15 @@ func (p *fakePlatform) Healthy(_ time.Duration) bool {
 func (p *fakePlatform) AtomicReplace(from, to string) error { return os.Rename(from, to) }
 
 type testFeed struct {
-	server   *httptest.Server
-	trust    Trust
-	key      ed25519.PrivateKey
-	manifest []byte
-	data     []byte
-	requests atomic.Int32
-	delay    time.Duration
+	server         *httptest.Server
+	trust          Trust
+	key            ed25519.PrivateKey
+	manifest       []byte
+	engineManifest []byte
+	packages       map[string][]byte
+	data           []byte
+	requests       atomic.Int32
+	delay          time.Duration
 }
 
 func newTestFeed(t *testing.T) *testFeed {
@@ -93,19 +140,28 @@ func newTestFeed(t *testing.T) *testFeed {
 		if r.URL.Path == "/yardim-guncelle.php" {
 			f.requests.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(f.manifest)
+			if r.URL.Query().Get("platform") == "windows" && f.engineManifest != nil {
+				_, _ = w.Write(f.engineManifest)
+			} else {
+				_, _ = w.Write(f.manifest)
+			}
 			return
 		}
 		if r.URL.Path == "/yardim-paket.php" {
 			if f.delay > 0 {
 				time.Sleep(f.delay)
 			}
-			_, _ = w.Write(f.data)
+			key := r.URL.Query().Get("platform") + "/" + r.URL.Query().Get("versionCode")
+			if data, ok := f.packages[key]; ok {
+				_, _ = w.Write(data)
+			} else {
+				_, _ = w.Write(f.data)
+			}
 			return
 		}
 		http.NotFound(w, r)
 	}))
-	f.trust = Trust{pub, "test-key", f.server.URL + "/yardim-guncelle.php?platform=windows", f.server.URL}
+	f.trust = Trust{Key: pub, KeyID: "test-key", Feed: f.server.URL + "/yardim-guncelle.php?platform=windows", Origin: f.server.URL}
 	f.manifest = signedManifest(t, key, manifestFor(seedVersionCode+1, f.server.URL, f.data))
 	t.Cleanup(f.server.Close)
 	return f
@@ -113,7 +169,7 @@ func newTestFeed(t *testing.T) *testFeed {
 func newTestUpdater(t *testing.T, f *testFeed) (*Updater, *fakePlatform) {
 	t.Helper()
 	p := &fakePlatform{}
-	u := &Updater{Root: t.TempDir(), Trust: f.trust, OS: p, FeedClient: f.server.Client(), DownloadClient: f.server.Client(), SoftWait: 2 * time.Second, HealthWait: time.Millisecond}
+	u := &Updater{Root: t.TempDir(), Trust: f.trust, OS: p, FeedClient: f.server.Client(), DownloadClient: f.server.Client(), HealthWait: time.Millisecond}
 	return u, p
 }
 
@@ -249,16 +305,15 @@ func TestActiveSessionIsNeverRestarted(t *testing.T) {
 		t.Fatal("active session was interrupted or update lost")
 	}
 }
-func TestSlowDownloadOpensWorkingVersionThenStages(t *testing.T) {
+func TestKnownNewVersionCompletesBeforeFirstLaunch(t *testing.T) {
 	f := newTestFeed(t)
 	f.delay = 100 * time.Millisecond
 	u, p := newTestUpdater(t, f)
-	u.SoftWait = 10 * time.Millisecond
 	if err := u.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.launched) != 1 || p.launched[0] != u.path(seedVersionCode) || u.state().Staged != seedVersionCode+1 || u.state().Current != seedVersionCode {
-		t.Fatal("slow download blocked or replaced the active working version")
+	if len(p.launched) != 1 || p.launched[0] != u.path(seedVersionCode+1) || u.state().Staged != 0 || u.state().Current != seedVersionCode+1 {
+		t.Fatal("known new version did not launch during the same opening")
 	}
 }
 func TestOneUpdaterOwnsConcurrentLaunches(t *testing.T) {

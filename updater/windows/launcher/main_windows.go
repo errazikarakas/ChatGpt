@@ -3,8 +3,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -83,16 +85,66 @@ func main() {
 	createWindow.Call(0, uintptr(unsafe.Pointer(utf16("STATIC"))), uintptr(unsafe.Pointer(utf16("Bakım.TR"))), 0x50000000, 30, 91, 355, 20, window, 0, instance, 0)
 	showWindow.Call(window, 5)
 	osPlatform := newWindowsPlatform(root)
+	osPlatform.Owner = window
 	updater := &Updater{Root: root, Trust: productionTrust(), OS: osPlatform, FeedClient: productionTrust().client(2500 * time.Millisecond), DownloadClient: productionTrust().client(60 * time.Second), Status: func(text string) { setText.Call(label, uintptr(unsafe.Pointer(utf16(text)))) }, Hide: func() { postMessage.Call(window, 0x8001, 0, 0) }}
 	updater.RequireLauncher = func() {
-		text := "Yeni uygulama sürümü için yardım uygulamasının yeniden indirilmesi gerekiyor. Mevcut çalışan sürümünüz açıldı. İndirme sayfasını açmak ister misiniz?"
-		answer, _, _ := messageBox.Call(0, uintptr(unsafe.Pointer(utf16(text))), uintptr(unsafe.Pointer(utf16(displayName))), 0x24)
-		if answer == 6 {
-			openShell.Call(0, uintptr(unsafe.Pointer(utf16("open"))), uintptr(unsafe.Pointer(utf16("https://xn--bakm-nza.tr/yardim.php"))), 0, 0, 1)
-		}
+		text := "Uygulama güncellemesi şu anda tamamlanamadı. Mevcut sürümünüz açık kalacak; sonraki açılışta güncelleme otomatik yeniden denenecek."
+		messageBox.Call(0, uintptr(unsafe.Pointer(utf16(text))), uintptr(unsafe.Pointer(utf16(displayName))), 0x40)
 	}
 	go func() {
-		if err := updater.Run(); err != nil {
+		prefetch := make(chan manifestResult, 1)
+		go func() {
+			m, raw, e := fetchManifest(updater.FeedClient, updater.Trust)
+			prefetch <- manifestResult{m, raw, e}
+		}()
+		updater.Prefetched = prefetch
+		delegator := newDelegator(updater, osPlatform)
+		var runErr error
+		if req, managedErr := delegator.managedRequest(); managedErr == nil {
+			ackDone := make(chan struct{})
+			cancelled := make(chan struct{})
+			coreReady := make(chan struct{})
+			var readyOnce sync.Once
+			updater.OnReady = func() { readyOnce.Do(func() { close(coreReady) }) }
+			go func() {
+				defer close(ackDone)
+				deadline, _ := time.Parse(time.RFC3339Nano, req.Deadline)
+				select {
+				case <-coreReady:
+					delegator.ready(req, cancelled)
+				case <-cancelled:
+				case <-time.After(time.Until(deadline)):
+				}
+			}()
+			runErr = updater.Run()
+			if runErr == nil {
+				select {
+				case <-coreReady:
+				default:
+					runErr = fmt.Errorf("managed core did not confirm a ready application")
+				}
+			}
+			if runErr != nil {
+				close(cancelled)
+				<-ackDone
+				delegator.failed(req, runErr)
+				postMessage.Call(window, 0x8002, 0, 0)
+				return
+			}
+			<-ackDone
+		} else {
+			if osPlatform.Busy() {
+				osPlatform.Foreground()
+				updater.hide()
+			}
+			handled, delegateErr := delegator.Run()
+			if delegateErr != nil {
+				runErr = delegateErr
+			} else if !handled {
+				runErr = updater.Run()
+			}
+		}
+		if err := runErr; err != nil {
 			updater.event("launch_failed", 0)
 			text := "Yardım uygulaması açılamadı. Mevcut sürüm korunuyor. Lütfen uygulamadan tam çıktıktan sonra yeniden deneyin."
 			if err == errUserDeclined {

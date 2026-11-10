@@ -68,7 +68,6 @@ func TestWindowsRealSignedUpdateBusyDeferralAndRollback(t *testing.T) {
 	p := newWindowsPlatform(u.Root)
 	u.OS = p
 	u.HealthWait = 3 * time.Second
-	u.SoftWait = 8 * time.Second
 	t.Cleanup(func() { stopFixtureProcesses(t, p) })
 	if err = u.Run(); err != nil {
 		t.Fatal(err)

@@ -227,23 +227,8 @@ func processPath(pid int) string {
 func (p *windowsPlatform) ProcessMatches(pid int, path string) bool {
 	return pid > 0 && strings.EqualFold(filepath.Clean(processPath(pid)), filepath.Clean(path))
 }
-func (p *windowsPlatform) StopHelper(path string) {
-	root := strings.ToLower(filepath.Join(p.root, "launchers", "versions")) + string(os.PathSeparator)
-	if !strings.HasPrefix(strings.ToLower(filepath.Clean(path)), root) || !strings.EqualFold(filepath.Base(path), "launcher.exe") {
-		return
-	}
-	for pid, image := range processes() {
-		if strings.EqualFold(filepath.Clean(image), filepath.Clean(path)) {
-			h, _, _ := openProcess.Call(0x1001, 0, uintptr(pid))
-			if h != 0 {
-				kernel.NewProc("TerminateProcess").Call(h, 1)
-				closeHandle.Call(h)
-			}
-		}
-	}
-}
 
-func withAttachment(path, source string, execute bool) error {
+func saveAttachment(path, source string) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	hr, _, _ := coInitialize.Call(0, 2)
@@ -287,23 +272,6 @@ func withAttachment(path, source string, execute bool) error {
 			return err
 		}
 	}
-	if execute {
-		var handle uintptr
-		fn := *(*uintptr)(unsafe.Pointer(table + 12*unsafe.Sizeof(uintptr(0))))
-		// Pass the Go pointer directly to the syscall's uintptr-escape boundary.
-		// Sending it through an untyped helper could leave it on a movable stack.
-		hr, _, _ = syscall.SyscallN(fn, object, 0, 0, uintptr(unsafe.Pointer(&handle)))
-		if handle != 0 {
-			closeHandle.Call(handle)
-		}
-		if uint32(hr) == 0x800704c7 || uint32(hr) == 0x80004004 {
-			return errUserDeclined
-		}
-		if err := hrError(hr); err != nil {
-			return fmt.Errorf("Attachment Execute: %w", err)
-		}
-		return nil
-	}
 	if err := hrError(method(11)); err != nil {
 		return fmt.Errorf("Attachment Save: %w", err)
 	}
@@ -315,7 +283,7 @@ func (p *windowsPlatform) Prepare(path, source string) error {
 	if err := os.WriteFile(path+":Zone.Identifier", zone, 0600); err != nil {
 		return errors.New("Windows origin metadata could not be retained")
 	}
-	if err := withAttachment(path, source, false); err != nil {
+	if err := saveAttachment(path, source); err != nil {
 		return err
 	}
 	return os.WriteFile(path+":Zone.Identifier", zone, 0600)
@@ -333,12 +301,12 @@ type shellExecuteInfo struct {
 	Icon, Process                     uintptr
 }
 
-func (p *windowsPlatform) Launch(path string) error {
+func (p *windowsPlatform) shellLaunch(path string) (uintptr, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	hr, _, _ := coInitialize.Call(0, 2)
 	if err := hrError(hr); err != nil {
-		return fmt.Errorf("Shell COM initialization: %w", err)
+		return 0, fmt.Errorf("Shell COM initialization: %w", err)
 	}
 	defer coUninitialize.Call()
 	info := shellExecuteInfo{Mask: 0x40 | 0x100, Window: p.Owner, Verb: utf16("open"), File: utf16(path), Show: 1}
@@ -346,17 +314,46 @@ func (p *windowsPlatform) Launch(path string) error {
 	// Primary documented ShellExecuteEx path. No NOZONECHECKS, no policy changes,
 	// and no retry through a different executor after Windows denies execution.
 	ok, _, err := syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteExW").Call(uintptr(unsafe.Pointer(&info)))
-	if info.Process != 0 {
-		closeHandle.Call(info.Process)
-	}
 	if ok == 0 {
 		if err == syscall.Errno(1223) || err == syscall.Errno(5) || err == syscall.Errno(577) || err == syscall.Errno(1260) || err == syscall.Errno(225) {
-			return errUserDeclined
+			return 0, errUserDeclined
 		}
-		return nativeError("Windows ShellExecuteEx", err)
+		return 0, nativeError("Windows ShellExecuteEx", err)
 	}
-	return nil
+	return info.Process, nil
 }
+
+func (p *windowsPlatform) Launch(path string) error {
+	h, err := p.shellLaunch(path)
+	if h != 0 {
+		closeHandle.Call(h)
+	}
+	return err
+}
+func (p *windowsPlatform) LaunchHelper(path string) (*launchedHelper, error) {
+	prefix := strings.ToLower(filepath.Join(p.root, "launchers", "versions")) + string(os.PathSeparator)
+	if !strings.HasPrefix(strings.ToLower(filepath.Clean(path)), prefix) || !strings.EqualFold(filepath.Base(path), "launcher.exe") {
+		return nil, errors.New("managed helper location rejected")
+	}
+	handle, err := p.shellLaunch(path)
+	if err != nil {
+		return nil, err
+	}
+	if handle == 0 {
+		return nil, errors.New("managed helper process handle unavailable")
+	}
+	pid, _, _ := kernel.NewProc("GetProcessId").Call(handle)
+	if pid == 0 {
+		closeHandle.Call(handle)
+		return nil, errors.New("managed helper PID unavailable")
+	}
+	return &launchedHelper{PID: int(pid), Alive: func() bool { wait, _, _ := kernel.NewProc("WaitForSingleObject").Call(handle, 0); return wait == 258 }, Stop: func() {
+		if p.ProcessMatches(int(pid), path) {
+			kernel.NewProc("TerminateProcess").Call(handle, 1)
+		}
+	}, Close: func() { closeHandle.Call(handle) }}, nil
+}
+
 func (p *windowsPlatform) Authenticode(path string, m Manifest) error {
 	if !m.AuthenticodeRequired {
 		return nil

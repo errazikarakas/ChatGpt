@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -17,18 +19,25 @@ import (
 )
 
 const (
-	launcherVersion       = "1.0.0"
 	launcherAPI           = 1
 	seedVersionCode int64 = 2026111001
 	seedSHA256            = "d9ec96f4c8b6fa14e95e5aec4dc8998c84072ec470f088bd6b84f481092835a1"
 	seedSize        int64 = 28879872
-	updateKeyID           = "bakim-yardim-2026"
-	updatePublicKey       = "dS7jt4SMbs05q2Od0C5btJQbh9BjBhQWcS2d6gQwPt0="
-	updateFeed            = "https://xn--bakm-nza.tr/yardim-guncelle.php?platform=windows"
-	packageOrigin         = "https://xn--bakm-nza.tr"
 	displayName           = "Bakım.TR Yardım"
 	engineName            = "Bakım.TR Yardım.exe"
 )
+
+// Build-time values have no environment/command-line override in a released binary.
+// Native CI can compile a disposable helper with a separate temporary public key.
+var launcherVersion = "1.0.0"
+var launcherBuildString = "2026111101"
+var updateKeyID = "bakim-yardim-2026"
+var updatePublicKey = "dS7jt4SMbs05q2Od0C5btJQbh9BjBhQWcS2d6gQwPt0="
+var updateFeed = "https://xn--bakm-nza.tr/yardim-guncelle.php?platform=windows"
+var packageOrigin = "https://xn--bakm-nza.tr"
+var launcherUpdateFeed = "https://xn--bakm-nza.tr/yardim-guncelle.php?platform=windows-launcher"
+var fixtureRootBase64 = ""
+var fixtureCABase64 = ""
 
 type Envelope struct {
 	Payload   string `json:"payload"`
@@ -55,8 +64,10 @@ type Manifest struct {
 }
 
 type Trust struct {
-	Key                 ed25519.PublicKey
-	KeyID, Feed, Origin string
+	Key                   ed25519.PublicKey
+	KeyID, Feed, Origin   string
+	Platform, URLPlatform string
+	MinimumCode           int64
 }
 
 var errNewLauncherRequired = errors.New("a newer launcher is required")
@@ -66,7 +77,41 @@ func productionTrust() Trust {
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		panic("invalid compiled update key")
 	}
-	return Trust{key, updateKeyID, updateFeed, packageOrigin}
+	return Trust{Key: key, KeyID: updateKeyID, Feed: updateFeed, Origin: packageOrigin}
+}
+
+func (t Trust) platform() string {
+	if t.Platform != "" {
+		return t.Platform
+	}
+	return "windows-x64"
+}
+func (t Trust) urlPlatform() string {
+	if t.URLPlatform != "" {
+		return t.URLPlatform
+	}
+	return "windows"
+}
+func (t Trust) floor() int64 {
+	if t.MinimumCode > 0 {
+		return t.MinimumCode
+	}
+	return seedVersionCode
+}
+func launcherBuildCode() int64 {
+	n, e := strconv.ParseInt(launcherBuildString, 10, 64)
+	if e != nil || n < 2026111101 {
+		panic("invalid launcher build code")
+	}
+	return n
+}
+func launcherTrust() Trust {
+	t := productionTrust()
+	t.Platform = "windows-launcher"
+	t.URLPlatform = "windows-launcher"
+	t.Feed = launcherUpdateFeed
+	t.MinimumCode = 2026111101
+	return t
 }
 
 func (t Trust) allowedURL(raw string, code int64, feed bool) error {
@@ -82,7 +127,7 @@ func (t Trust) allowedURL(raw string, code int64, feed bool) error {
 		return errors.New("update origin rejected")
 	}
 	q := u.Query()
-	if q.Get("platform") != "windows" {
+	if q.Get("platform") != t.urlPlatform() || len(q["platform"]) != 1 {
 		return errors.New("update platform URL rejected")
 	}
 	if feed {
@@ -90,7 +135,7 @@ func (t Trust) allowedURL(raw string, code int64, feed bool) error {
 			return errors.New("feed endpoint rejected")
 		}
 	} else {
-		if u.Path != "/yardim-paket.php" || len(q) != 2 || q.Get("versionCode") != strconv.FormatInt(code, 10) {
+		if u.Path != "/yardim-paket.php" || len(q) != 2 || len(q["versionCode"]) != 1 || q.Get("versionCode") != strconv.FormatInt(code, 10) {
 			return errors.New("package endpoint rejected")
 		}
 	}
@@ -121,7 +166,7 @@ func (t Trust) verify(raw []byte, online bool, now time.Time) (Manifest, error) 
 	if json.Unmarshal(p, &m) != nil {
 		return m, errors.New("signed update JSON rejected")
 	}
-	if m.Schema != 1 || m.Product != "Bakim.TR Yardim" || m.Platform != "windows-x64" || m.Channel != "stable" || m.VersionCode < seedVersionCode || m.MinLauncher < 1 {
+	if m.Schema != 1 || m.Product != "Bakim.TR Yardim" || m.Platform != t.platform() || m.Channel != "stable" || m.VersionCode < t.floor() || m.MinLauncher < 1 {
 		return m, errors.New("signed update identity rejected")
 	}
 	if m.MinLauncher > launcherAPI {
@@ -158,7 +203,21 @@ func (t Trust) verify(raw []byte, online bool, now time.Time) (Manifest, error) 
 }
 
 func (t Trust) client(timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, TLSHandshakeTimeout: 1500 * time.Millisecond, ResponseHeaderTimeout: 2500 * time.Millisecond, IdleConnTimeout: 10 * time.Second}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSHandshakeTimeout: 1500 * time.Millisecond, ResponseHeaderTimeout: 2500 * time.Millisecond, IdleConnTimeout: 10 * time.Second}
+	// Empty in every production build. Disposable CI helpers trust only their
+	// compiled temporary TLS test CA; TLS validation is never disabled.
+	if fixtureCABase64 != "" {
+		raw, err := base64.StdEncoding.Strict().DecodeString(fixtureCABase64)
+		if err != nil {
+			panic("invalid compiled fixture CA")
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(raw) {
+			panic("invalid fixture CA certificate")
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+	return &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 3 {
 			return errors.New("too many update redirects")
 		}

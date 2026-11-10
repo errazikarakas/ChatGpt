@@ -2,13 +2,15 @@
 
 Go1.27.4 standart kütüphanesiyle native x64 GUI. Mevcut doğrulanmış RustDesk motorunun baytları korunur; ilk açılış/offline geri dönüş imajı olarak pakete gömülür. Kurulum, servis veya yönetici hakkı gerektirmez.
 
-Ortak root Ed25519 update envelope imzası, SHA256/boyut, exact HTTPS host/endpoint, platform/channel, monotonik versionCode, issuedAt/expiry ve minLauncher kontrol edilir. Zone.Identifier korunur; Windows IAttachmentExecute Save/Execute antivirüs ve güvenlik onay akışını uygular. MotW/SmartScreen/Defender kapatılmaz. Geçerli Windows kod imzalama sertifikası henüz sağlanmadığı için uyarıların kalktığı iddia edilmez. sign_windows.ps1 yalnız geçerli codeSigning EKU ve Windows-trusted sertifika ile SHA256 zaman damgalı imzalama hook'udur.
+Ortak root Ed25519 update envelope imzası, SHA256/boyut, exact HTTPS host/endpoint, platform/channel, monotonik versionCode, issuedAt/expiry ve minLauncher kontrol edilir. Zone.Identifier korunur; Windows IAttachmentExecute Save + ShellExecuteExW(open) antivirüs ve güvenlik onay akışını uygular. MotW/SmartScreen/Defender kapatılmaz. Geçerli Windows kod imzalama sertifikası henüz sağlanmadığı için uyarıların kalktığı iddia edilmez. sign_windows.ps1 yalnız geçerli codeSigning EKU ve Windows-trusted sertifika ile SHA256 zaman damgalı imzalama hook'udur.
 
-%LOCALAPPDATA%/BakimTRYardim/Launcher/versions altında immutable sürümler, atomik current.json ve önceki/seed sürüm geri dönüşü vardır. Tek native mutex, Unicode isimli gerçek motor alt süreçleri ve GUI sağlığı takip edilir. Çalışan motor durdurulmaz. Yavaş download8sn sonra mevcut sürüm açılır ve indirme arkaplanda yalnız stage edilir; sonraki tam uygulamadan çıkış/açılışta etkinleşir. Güncelleme kontrolü2.5sn, indirme toplam60sn ile sınırlıdır.
+%LOCALAPPDATA%/BakimTRYardim/Launcher/versions altında immutable sürümler, atomik current.json ve önceki/seed sürüm geri dönüşü vardır. Tek native mutex, Unicode isimli gerçek motor alt süreçleri ve GUI sağlığı takip edilir. Çalışan motor durdurulmaz. Metadata denetimleri paralel ve2.5sn ile sınırlıdır. Yeni sürüm imzalı metadata ile biliniyorsa60sn toplam sınır içindeki indirme tamamlanır ve aynı açılışta yeni sürüm açılır. Gerçek ağ/paket hatası veya timeoutta doğrulanmış mevcut sürüme dönülür. Aktif motor oturumu varsa yeni motor yalnız stage edilir ve mevcut süreçlere dokunulmaz.
 
-Bu ara v1 kaynak checkpoint'i motor updater testini içerir. Başlatıcının kendi signed-cache delegation güncellemesi sonraki checkpoint'te eklenecektir; minLauncher uyumsuzluğu sessizce geçilmez.
+Başlatıcı da ayrı windows-launcher imzalı kanalından otomatik güncellenir. Kalıcı indirme giriş dosyası eski kalsa bile en yeni doğrulanmış cached başlatıcıya delege olur. Ebeveyn/çocuk ayrı mutex kapılarını kullanır. Nonce, tam child PID/handle, imzalı dosya yolu ve Core.OnReady sonrası GUI ACK eşleşmeden launcher current pointer ilerlemez. Erken child çıkışında önceki doğrulanmış başlatıcıya veya mevcut yerel çekirdeğe dönülür; yalnız ebeveynin açtığı updater helper handle'ı sonlandırılabilir, RustDesk motorları sonlandırılmaz. Managed startup hatası parent'a kısa hata ACK'i verir; child modal hata dialogunda rollback'i bekletmez.
 
 Windows test yardımcıları yalnız disposable CI makinesinde sentetik dosyalara normal Windows güvenlik onayı verir; uygulamaya gömülmez ve dağıtılmaz. Gerçek seed motorun GUI alt süreci ayrıca başlatılır; outer process exit tek başına sağlık sayılmaz.
 
 Microsoft: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-iattachmentexecute
 Go Ed25519: https://pkg.go.dev/crypto/ed25519
+
+Windows yürütme API: https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw

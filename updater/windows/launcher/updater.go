@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,13 +41,22 @@ type State struct {
 }
 type Updater struct {
 	Root                       string
+	FileName                   string
 	Trust                      Trust
 	OS                         Platform
 	FeedClient, DownloadClient *http.Client
 	Status                     func(string)
 	Hide                       func()
 	RequireLauncher            func()
-	SoftWait, HealthWait       time.Duration
+	OnReady                    func()
+	HealthWait                 time.Duration
+	Prefetched                 <-chan manifestResult
+}
+
+type manifestResult struct {
+	Manifest Manifest
+	Raw      []byte
+	Err      error
 }
 
 func (u *Updater) event(name string, code int64) {
@@ -75,7 +85,13 @@ func (u *Updater) hide() {
 func (u *Updater) dir(code int64) string {
 	return filepath.Join(u.Root, "versions", strconv.FormatInt(code, 10))
 }
-func (u *Updater) path(code int64) string { return filepath.Join(u.dir(code), "engine.exe") }
+func (u *Updater) fileName() string {
+	if u.FileName != "" {
+		return u.FileName
+	}
+	return "engine.exe"
+}
+func (u *Updater) path(code int64) string { return filepath.Join(u.dir(code), u.fileName()) }
 
 func checkedFile(path, digest string, size int64) error {
 	f, err := os.Open(path)
@@ -199,7 +215,7 @@ func (u *Updater) download(m Manifest, raw []byte) error {
 		return err
 	}
 	defer os.RemoveAll(temp)
-	path := filepath.Join(temp, "engine.exe")
+	path := filepath.Join(temp, u.fileName())
 	req, err := http.NewRequest("GET", m.URL, nil)
 	if err != nil {
 		return err
@@ -268,6 +284,9 @@ func (u *Updater) launch(code int64) error {
 		return errors.New("engine GUI startup not confirmed")
 	}
 	u.event("gui_ready", code)
+	if u.OnReady != nil {
+		u.OnReady()
+	}
 	u.hide()
 	return nil
 }
@@ -278,17 +297,22 @@ func (u *Updater) activate(s *State, code int64) error {
 		_ = u.save(*s)
 		u.event("activation_deferred_busy", code)
 		u.OS.Foreground()
+		if _, err := u.valid(s.Current); err == nil && u.OS.Healthy(300*time.Millisecond) && u.OnReady != nil {
+			u.OnReady()
+		}
 		return nil
 	}
 	previous := s.Current
 	if err := u.launch(code); err != nil {
+		if errors.Is(err, errUserDeclined) {
+			s.Staged = code
+			_ = u.save(*s)
+			return err
+		}
 		s.Failed = code
 		s.Staged = 0
 		_ = u.save(*s)
 		u.event("candidate_failed_rollback", code)
-		if errors.Is(err, errUserDeclined) {
-			return err
-		}
 		// Never terminate a possibly active child just because its outer launcher exited.
 		if u.OS.Busy() {
 			u.OS.Foreground()
@@ -310,9 +334,6 @@ func (u *Updater) activate(s *State, code int64) error {
 }
 
 func (u *Updater) Run() error {
-	if u.SoftWait == 0 {
-		u.SoftWait = 8 * time.Second
-	}
 	if u.HealthWait == 0 {
 		u.HealthWait = 20 * time.Second
 	}
@@ -349,8 +370,20 @@ func (u *Updater) Run() error {
 	if err = u.save(s); err != nil {
 		return err
 	}
+	if busy && u.OS.Healthy(300*time.Millisecond) && u.OnReady != nil {
+		u.OnReady()
+	}
 	u.status("Güncellemeler denetleniyor…")
-	m, raw, feedErr := fetchManifest(u.FeedClient, u.Trust)
+	var m Manifest
+	var raw []byte
+	var feedErr error
+	if u.Prefetched != nil {
+		r := <-u.Prefetched
+		u.Prefetched = nil
+		m, raw, feedErr = r.Manifest, r.Raw, r.Err
+	} else {
+		m, raw, feedErr = fetchManifest(u.FeedClient, u.Trust)
+	}
 	if feedErr != nil {
 		if errors.Is(feedErr, errNewLauncherRequired) {
 			u.event("new_launcher_required_user_notified", m.VersionCode)
@@ -409,24 +442,10 @@ func (u *Updater) Run() error {
 		return u.launch(s.Current)
 	}
 	u.status("Yeni sürüm güvenle indiriliyor…")
-	done := make(chan error, 1)
-	go func() { done <- u.download(m, raw) }()
-	timer := time.NewTimer(u.SoftWait)
-	defer timer.Stop()
+	// Once a valid signed feed says a new version exists, finish its bounded
+	// download before the first GUI launch. Existing sessions still stay untouched.
 	startedOld := busy
-	select {
-	case err = <-done:
-	case <-timer.C:
-		// Slow downloads continue in the background; the working version opens promptly.
-		u.event("download_continues_in_background", m.VersionCode)
-		if !busy {
-			if err = u.launch(s.Current); err != nil {
-				return err
-			}
-			startedOld = true
-		}
-		err = <-done
-	}
+	err = u.download(m, raw)
 	if err != nil {
 		u.event("update_download_rejected_using_current", m.VersionCode)
 		if startedOld {
@@ -448,6 +467,13 @@ func (u *Updater) Run() error {
 }
 
 func defaultRoot() (string, error) {
+	if fixtureRootBase64 != "" {
+		b, err := base64.StdEncoding.Strict().DecodeString(fixtureRootBase64)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err

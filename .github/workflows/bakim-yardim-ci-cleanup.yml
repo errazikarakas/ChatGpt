@@ -1,0 +1,28 @@
+name: Bakım.TR Yardım clean obsolete test watchers
+'on':
+  push:
+    branches: [bakim-yardim-build]
+    paths: [.github/workflows/bakim-yardim-ci-cleanup.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  release-obsolete-windows-runners:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Cancel only obsolete watchers for this project branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          gh api 'repos/errazikarakas/ChatGpt/actions/runs?branch=bakim-yardim-build&per_page=100' > runs.json
+          python3 - <<'PY'
+          import json,os,subprocess
+          for run in json.load(open('runs.json'))['workflow_runs']:
+              if run['head_branch'] != 'bakim-yardim-build': continue
+              if run.get('path') != '.github/workflows/bakim-yardim-windows-smoke.yml': continue
+              if run['head_sha'] == os.environ['CURRENT_SHA']: continue
+              if run['status'] not in ('queued','pending','in_progress','waiting','requested'): continue
+              subprocess.run(['gh','run','cancel',str(run['id']),'--repo','errazikarakas/ChatGpt'],check=False)
+              print('Cancelled obsolete synthetic-test watcher:',run['id'])
+          PY

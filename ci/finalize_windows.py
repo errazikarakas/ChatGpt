@@ -6,7 +6,7 @@ from pathlib import Path
 import brotli
 from PIL import Image
 import io
-p=argparse.ArgumentParser();p.add_argument('--input',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--config',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--input',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--config',type=Path,required=True);p.add_argument('--build-run',type=int,required=True);a=p.parse_args()
 cfg=json.loads(a.config.read_text(encoding='utf-8'))
 with urllib.request.urlopen(cfg['logoUrl'],timeout=30) as response:raw=response.read()
 assert hashlib.sha256(raw).hexdigest()==cfg['logoSha256']
@@ -24,7 +24,7 @@ data=ctypes.create_string_buffer(blob)
 if not k.UpdateResourceW(h,ctypes.c_void_p(10),'RDPKG',1033,data,len(blob)):
  err=ctypes.get_last_error();k.EndUpdateResourceW(h,True);raise ctypes.WinError(err)
 if not k.EndUpdateResourceW(h,False):raise ctypes.WinError(ctypes.get_last_error())
-report={'format':'RustDesk1.5.1-RDPKG','upstreamEngineRecompiled':True,'nativeBuildRun':42887318323,'originalSha256':hashlib.sha256(a.input.read_bytes()).hexdigest(),'finalSha256':hashlib.sha256(a.output.read_bytes()).hexdigest(),'iconSha256':hashlib.sha256(icon).hexdigest(),'innerExecutable':'Bakim-TR-Yardim.exe','isolatedCache':'bakim-tr-yardim','nativeConfigNamespace':'Bakım.TR Yardım','publicPresets':{k:cfg[k] for k in ('appName','idServer','relayServer','publicKey')}}
+report={'format':'RustDesk1.5.1-RDPKG','upstreamEngineRecompiled':True,'nativeBuildRun':a.build_run,'originalSha256':hashlib.sha256(a.input.read_bytes()).hexdigest(),'finalSha256':hashlib.sha256(a.output.read_bytes()).hexdigest(),'iconSha256':hashlib.sha256(icon).hexdigest(),'innerExecutable':'Bakim-TR-Yardim.exe','isolatedCache':'bakim-tr-yardim','nativeConfigNamespace':'Bakım.TR Yardım','publicPresets':{k:cfg[k] for k in ('appName','idServer','relayServer','publicKey')}}
 (a.output.parent/'finalization.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 (a.output.parent/'SHA256SUMS').write_text(report['finalSha256']+'  '+a.output.name+'\n')
 print('Branded icon, native engine and isolated portable package prepared; no credentials embedded')

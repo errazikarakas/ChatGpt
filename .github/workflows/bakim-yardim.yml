@@ -3,6 +3,11 @@ name: Bakım.TR Yardım build
   push:
     branches:
     - bakim-yardim-build
+    paths:
+    - ci/apply_branding.py
+    - ci/windows-smoke.ps1
+    - branding/client-public.json
+    - .github/workflows/bakim-yardim.yml
   workflow_dispatch: {}
 permissions:
   contents: read

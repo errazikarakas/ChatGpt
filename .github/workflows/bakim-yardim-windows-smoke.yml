@@ -1,4 +1,4 @@
-name: Bakım.TR Yardım Windows remote session test
+name: Bakım.TR Yardım Windows remote verification
 'on':
   push:
     branches:
@@ -22,12 +22,15 @@ jobs:
     - name: Download original compiled portable client
       env:
         GH_TOKEN: ${{ github.token }}
-      run: "New-Item -ItemType Directory -Force app | Out-Null\nfor ($i=0; $i -lt 200; $i++) {\n gh run download 42887318323 --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows --dir app\n if ($LASTEXITCODE\
-        \ -eq 0 -and (Test-Path app/Bakim-TR-Yardim.exe)) { break }\n Start-Sleep 15\n}\nif (-not(Test-Path app/Bakim-TR-Yardim.exe)) { throw 'Compiled Windows client is unavailable' }"
+      run: "New-Item -ItemType Directory -Force app | Out-Null\nfor ($i=0; $i -lt 200; $i++) {\n $ids=gh api 'repos/errazikarakas/ChatGpt/actions/workflows/bakim-yardim.yml/runs?branch=bakim-yardim-build&per_page=30'\
+        \ --jq '.workflow_runs[] | select((.head_commit.message // \"\") | startswith(\"[windows-only]\")) | .id'\n $build=[string]($ids | Select-Object -First 1)\n if ($build) {\n  gh run download $build\
+        \ --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows --dir app\n  if ($LASTEXITCODE -eq 0 -and (Test-Path app/Bakim-TR-Yardim.exe)) { \"ORIGINAL_BUILD_RUN=$build\" >> $env:GITHUB_ENV; break\
+        \ }\n  $state=gh run view $build --repo errazikarakas/ChatGpt --json status,conclusion | ConvertFrom-Json\n  if($state.status -eq 'completed' -and $state.conclusion -ne 'success'){throw 'Newest\
+        \ Windows source build did not produce a validated executable'}\n }\n Start-Sleep 15\n}\nif (-not(Test-Path app/Bakim-TR-Yardim.exe)) { throw 'Compiled Windows client is unavailable' }"
     - name: Finalize branded asset and isolated portable cache
       run: 'python -m pip install pillow brotli
 
-        python ci/finalize_windows.py --input app/Bakim-TR-Yardim.exe --output release/Bakim-TR-Yardim.exe --config branding/client-public.json
+        python ci/finalize_windows.py --input app/Bakim-TR-Yardim.exe --output release/Bakim-TR-Yardim.exe --config branding/client-public.json --build-run $env:ORIGINAL_BUILD_RUN
 
         Copy-Item app/NOTICE.txt release/NOTICE.txt
 
@@ -64,3 +67,6 @@ jobs:
         name: bakim-yardim-windows-remote-e2e
         path: remote-proof/*
         retention-days: 14
+concurrency:
+  group: bakim-yardim-windows-verification
+  cancel-in-progress: true

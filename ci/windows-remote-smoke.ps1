@@ -39,7 +39,7 @@ for($i=0;$i -lt 15;$i++){
 }
 if(-not $controller){throw 'Synthetic Windows controller ID unavailable'}
 # Notify only our test operator through the web server access log before requesting approval.
-$null=Invoke-WebRequest -UseBasicParsing -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?controllerId='+$controller) -TimeoutSec 20
+$null=Invoke-WebRequest -UseBasicParsing -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?controllerId='+$controller+'&role=windows') -TimeoutSec 20
 # Exercise the same ID field + Enter path a user follows. No custom URI scheme or CLI connect is used.
 Start-Sleep 12
 $cfg=Get-Content branding/client-public.json -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -95,7 +95,7 @@ if($remote -eq [IntPtr]::Zero){throw 'Remote desktop UI did not appear'}
 $controllerSha=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($controller))).Replace('-','').ToLowerInvariant()
 $accepted=$false
 for($i=0;$i -lt 90;$i++){
- try {$ack=Invoke-RestMethod -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?proof='+$controllerSha) -TimeoutSec 10;$accepted=($ack.windowsAcceptedControllerSha256 -eq $controllerSha)} catch {$accepted=$false}
+ try {$ack=Invoke-RestMethod -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?proof='+$controllerSha+'&t='+[DateTime]::UtcNow.Ticks) -TimeoutSec 10;$accepted=($ack.windowsAcceptedControllerSha256 -eq $controllerSha)} catch {$accepted=$false}
  if($accepted){break}
  Start-Sleep 2
 }
@@ -118,7 +118,7 @@ $bitmap.Save((Join-Path $out 'isolated-remote-desktop.png'),[System.Drawing.Imag
 $graphics.Dispose();$bitmap.Dispose()
 $markerVerified=$false
 for($i=0;$i -lt 45;$i++){
- try {$ack=Invoke-RestMethod -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?markerProof='+$controllerSha) -TimeoutSec 10;$markerVerified=($ack.windowsMarkerControllerSha256 -eq $controllerSha -and $ack.windowsMarkerVerified -eq $true)} catch {$markerVerified=$false}
+ try {$ack=Invoke-RestMethod -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?markerProof='+$controllerSha+'&t='+[DateTime]::UtcNow.Ticks) -TimeoutSec 10;$markerVerified=($ack.windowsMarkerControllerSha256 -eq $controllerSha -and $ack.windowsMarkerVerified -eq $true)} catch {$markerVerified=$false}
  if($markerVerified){break}
  Start-Sleep 2
 }

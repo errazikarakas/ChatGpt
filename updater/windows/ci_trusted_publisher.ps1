@@ -153,17 +153,33 @@ try {
       if ($existing.Count -eq 0) {
         $name = 'bakim-ci-' + $script:state.nonce + '-' + [Guid]::NewGuid().ToString('N') + '.cat'
         $catalogPath = Join-Path $labRoot $name
-        $record = [PSCustomObject]@{ name=$name; path=$catalogPath; fileSha256=$before; registered=$false }
+        $record = [PSCustomObject]@{ name=$name; path=$catalogPath; fileSha256=$before; registered=$false; systemRegistered=$false }
         $script:state.catalogs = @($script:state.catalogs) + $record
         Save-State $script:state
         $null = Invoke-BoundedPowerShell -Step 'New-FileCatalog' -InputData @{path=$path; catalog=$catalogPath} -Leaf $item.Name -Code '$null=New-FileCatalog -Path $data.path -CatalogFilePath $data.catalog -CatalogVersion 2; [PSCustomObject]@{created=$true}'
         Invoke-SignTool -Arguments @('sign','/fd','SHA256','/sha1',$script:state.thumbprint,'/s','My',$catalogPath)
         Invoke-SignTool -Arguments @('verify','/pa',$catalogPath)
+        # Prove PE SIP/catalog membership independently of automatic DB lookup.
+        Invoke-SignTool -Arguments @('verify','/v','/pa','/c',$catalogPath,$path)
+        Write-Proof @{action='Add';step='ExplicitCatalogMembership';fileName=$item.Name;valid=$true}
         # The nonce+GUID catalog name is already unique. Do not rename it: cleanup removes exactly this owned entry.
         # Persist ownership before the bounded registration; a timeout may occur after the database write.
         $record.registered = $true
         Save-State $script:state
         Invoke-SignTool -Arguments @('catdb','/d',$catalogPath)
+      }
+      # /d installs into the default catalog DB. Some standard OS consumers
+      # search the system-component/driver DB instead. Only a NotSigned lookup
+      # result may lead to registering the same already-verified owned catalog.
+      $lookup = Invoke-BoundedPowerShell -Step 'DefaultCatalog-Lookup' -InputData @{path=$path} -Leaf $item.Name -Code '$s=Get-AuthenticodeSignature -LiteralPath $data.path; [PSCustomObject]@{status=[string]$s.Status}'
+      Write-Proof @{action='Add';step='DefaultCatalog-Lookup';fileName=$item.Name;status=[string]$lookup.status}
+      if($lookup.status -eq 'NotSigned'){
+        $ownedCatalog = @($script:state.catalogs | Where-Object {$_.fileSha256 -eq $before})[0]
+        if(-not $ownedCatalog.systemRegistered){
+          $ownedCatalog.systemRegistered=$true
+          Save-State $script:state
+          Invoke-SignTool -Arguments @('catdb',$ownedCatalog.path)
+        }
       }
       $signature = Assert-Signature $path
       Invoke-SignTool -Arguments @('verify','/a','/pa',$path)
@@ -177,6 +193,7 @@ try {
       foreach ($entry in @($script:state.catalogs)) {
         if ($entry.name -notmatch ('^bakim-ci-' + $script:state.nonce + '-[a-f0-9]{32}\.cat$') -or [IO.Path]::GetFullPath($entry.path) -ne (Join-Path $labRoot $entry.name)) { throw 'Refusing non-owned catalog cleanup.' }
         if ($entry.registered) { try { Invoke-SignTool -Arguments @('catdb','/d','/r',$entry.name) } catch { $cleanupErrors += $_.Exception.Message } }
+        if ($null -ne $entry.PSObject.Properties['systemRegistered'] -and $entry.systemRegistered) { try { Invoke-SignTool -Arguments @('catdb','/r',$entry.name) } catch { $cleanupErrors += $_.Exception.Message } }
       }
       foreach ($storeName in @('Root','TrustedPublisher','My')) {
         $location = if ($storeName -eq 'My') { 'CurrentUser' } else { $trustLocation }

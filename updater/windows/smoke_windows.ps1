@@ -24,7 +24,8 @@ $tokens=$null;$parseErrors=$null
 [void][System.Management.Automation.Language.Parser]::ParseFile($helper,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count -gt 0){throw ('Consent watcher parse failed: '+($parseErrors.Message -join '; '))}
 $windowsPowerShell=Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
-$approver=Start-Process $windowsPowerShell -ArgumentList @('-NoProfile','-File',('"'+$helper+'"')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $base 'proof/consent-stderr.txt') -RedirectStandardOutput (Join-Path $base 'proof/consent-stdout.txt')
+$nativeWindowsModules=(Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/Modules')+';'+(Join-Path $env:ProgramFiles 'WindowsPowerShell/Modules')
+$approver=Start-Process $windowsPowerShell -Environment @{PSModulePath=$nativeWindowsModules} -ArgumentList @('-NoProfile','-File',('"'+$helper+'"')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $base 'proof/consent-stderr.txt') -RedirectStandardOutput (Join-Path $base 'proof/consent-stdout.txt')
 Start-Sleep -Milliseconds 500
 if($approver.HasExited){throw ('Consent watcher exited before tests: '+$approver.ExitCode)}
 try {

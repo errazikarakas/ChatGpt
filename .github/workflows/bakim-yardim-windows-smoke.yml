@@ -48,11 +48,11 @@ jobs:
 
         Copy-Item ci/network_probe.py final-smoke-work/network_probe.py
 
-        powershell -ExecutionPolicy Bypass -File ci/windows-smoke.ps1 -Executable release/Bakim-TR-Yardim.exe -OutputDirectory release/proof
+        powershell -ExecutionPolicy Bypass -File ci/windows-final-smoke.ps1 -Executable release/Bakim-TR-Yardim.exe -OutputDirectory release/proof
 
         $cfg=Get-Content branding/client-public.json -Raw -Encoding UTF8 | ConvertFrom-Json
 
-        $cache=Join-Path $env:LOCALAPPDATA $cfg.appName.ToLowerInvariant()
+        $cache=Join-Path $env:LOCALAPPDATA ($cfg.appName.ToLowerInvariant())
 
         $inner=Join-Path $cache ($cfg.appName+".exe")
 

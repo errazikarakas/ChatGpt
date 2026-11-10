@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:BAKIM_NATIVE_TESTS -ne '1') { throw 'Disposable GitHub Windows native-test runner required.' }
 if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or $env:GITHUB_RUN_ID -notmatch '^\d+$') { throw 'RUNNER_TEMP and numeric GITHUB_RUN_ID required.' }
 $labRoot = Join-Path $env:RUNNER_TEMP ('bakim-publisher-lab-' + $env:GITHUB_RUN_ID)
@@ -70,7 +71,7 @@ function Invoke-BoundedPowerShell([string]$Step, [hashtable]$InputData, [string]
   $resultPath = Join-Path $labRoot ([Guid]::NewGuid().ToString('N') + '.result.json')
   $InputData.resultPath = $resultPath
   $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($InputData | ConvertTo-Json -Compress)))
-  $worker = '$ErrorActionPreference="Stop"; try { $data=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $encodedData + '")) | ConvertFrom-Json); $result = & { ' + $Code + ' }; [IO.File]::WriteAllText($data.resultPath,($result | ConvertTo-Json -Compress -Depth 6),[Text.Encoding]::UTF8); exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
+  $worker = '$ErrorActionPreference="Stop"; $ProgressPreference="SilentlyContinue"; try { Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $data=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $encodedData + '")) | ConvertFrom-Json); $result = & { ' + $Code + ' }; [IO.File]::WriteAllText($data.resultPath,($result | ConvertTo-Json -Compress -Depth 6),[Text.Encoding]::UTF8); exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
   $encodedWorker = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($worker))
   try {
     Invoke-BoundedProcess -Executable (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Arguments @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedWorker) -Step $Step -Leaf $Leaf

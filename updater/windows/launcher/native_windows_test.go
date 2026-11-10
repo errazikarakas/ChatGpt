@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func nativeOnly(t *testing.T) {
@@ -21,6 +24,7 @@ func nativeOnly(t *testing.T) {
 func auditedWindowsPlatform(t *testing.T, root string) *windowsPlatform {
 	t.Helper()
 	p := newWindowsPlatform(root)
+	p.Owner = nativeTestOwner(t)
 	p.BeforeLaunch = func(path string) {
 		audit := os.Getenv("BAKIM_CI_PENDING")
 		if audit == "" {
@@ -41,6 +45,44 @@ func auditedWindowsPlatform(t *testing.T, root string) *windowsPlatform {
 		}
 	}
 	return p
+}
+func nativeTestOwner(t *testing.T) uintptr {
+	t.Helper()
+	created := make(chan uintptr, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		instance, _, _ := getModule.Call(0)
+		class := utf16("BakimCI.Owner." + intString(time.Now().UnixNano()))
+		callback := syscall.NewCallback(func(h uintptr, msg uint32, w, l uintptr) uintptr {
+			if msg == 2 {
+				quitMessage.Call(0)
+				return 0
+			}
+			r, _, _ := defWindow.Call(h, uintptr(msg), w, l)
+			return r
+		})
+		wc := windowClass{Size: uint32(unsafe.Sizeof(windowClass{})), Proc: callback, Instance: instance, Background: 6, Class: class}
+		registerClass.Call(uintptr(unsafe.Pointer(&wc)))
+		h, _, _ := createWindow.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(utf16("Bakım.TR Yardım · CI"))), 0x00CF0000, 80, 80, 420, 150, 0, 0, instance, 0)
+		showWindow.Call(h, 5)
+		created <- h
+		var message winMessage
+		for {
+			ok, _, _ := getMessage.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
+			if int32(ok) <= 0 {
+				return
+			}
+			translateMessage.Call(uintptr(unsafe.Pointer(&message)))
+			dispatchMessage.Call(uintptr(unsafe.Pointer(&message)))
+		}
+	}()
+	h := <-created
+	if h == 0 {
+		t.Fatal("real pumping CI owner window unavailable")
+	}
+	t.Cleanup(func() { postMessage.Call(h, 0x10, 0, 0) })
+	return h
 }
 func stopFixtureProcesses(t *testing.T, p *windowsPlatform) {
 	t.Helper()

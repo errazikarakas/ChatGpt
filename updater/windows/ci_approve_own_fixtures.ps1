@@ -44,6 +44,13 @@ public static class BakimCiConsent {
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+ [DllImport("user32.dll")] private static extern IntPtr OpenInputDesktop(uint flags,bool inherit,uint access);
+ [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr h);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern bool GetUserObjectInformation(IntPtr h,int index,StringBuilder text,int bytes,out int needed);
+ public static string InputDesktopName(){var h=OpenInputDesktop(0,false,1);if(h==IntPtr.Zero)return "unavailable";try{var text=new StringBuilder(256);int n;return GetUserObjectInformation(h,2,text,text.Capacity*2,out n)?text.ToString():"unavailable";}finally{CloseDesktop(h);}}
+
+ [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
+ public static bool PhysicalDpi(){try{return SetThreadDpiAwarenessContext(new IntPtr(-4))!=IntPtr.Zero;}catch{return false;}}
  [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr h,int a,out Rect r,int n);
  [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr w,IntPtr l,uint f,uint t,out UIntPtr v);
@@ -51,6 +58,7 @@ public static class BakimCiConsent {
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] private static extern uint GetShortPathName(string s,StringBuilder b,uint n);
  private static Node Read(IntPtr h){var a=new StringBuilder(32768);var b=new StringBuilder(256);uint p;Rect r;GetWindowText(h,a,a.Capacity);GetClassName(h,b,b.Capacity);GetWindowThreadProcessId(h,out p);GetWindowRect(h,out r);try{Rect physical;if(DwmGetWindowAttribute(h,9,out physical,Marshal.SizeOf(typeof(Rect)))==0)r=physical;}catch{}return new Node{Handle=h.ToInt64(),ProcessId=p,Title=a.ToString(),ClassName=b.ToString(),Visible=IsWindowVisible(h),Enabled=IsWindowEnabled(h),Bounds=r};}
  public static Node[] Windows(){var l=new List<Node>();EnumWindows((h,a)=>{if(IsWindowVisible(h))l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
+ public static Node[] AllWindows(){var l=new List<Node>();EnumWindows((h,a)=>{l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
  public static Node[] Children(long p){var l=new List<Node>();EnumChildWindows(new IntPtr(p),(h,a)=>{l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
  public static uint Process(long h){uint p;GetWindowThreadProcessId(new IntPtr(h),out p);return p;}
  public static string LongPath(string p){var b=new StringBuilder(32768);return GetLongPathName(p,b,(uint)b.Capacity)>0?b.ToString():p;}
@@ -64,7 +72,7 @@ try {Add-Type -AssemblyName UIAutomationClient;Add-Type -AssemblyName UIAutomati
 try {Add-Type -AssemblyName System.Drawing;$drawing=$true}catch{Event @{event='drawing-unavailable';error=Redact $_.Exception.Message}}
 $testRootPattern='^TestWindows(?:RealSignedUpdateBusyDeferralAndRollback|ExactProductionEngineChildGUI|ActualLauncherDelegationAndExactChildRollback)[0-9]+$'
 $knownHashes=@{};$candidates=@();$processInfo=@{};$lastRefresh=[DateTime]::MinValue
-$seen=@{};$attempts=@{};$lastClick=@{}
+$seen=@{};$attempts=@{};$lastClick=@{};$script:dialogBounds=@{};$script:snapshots=0;$script:pendingReason="not-checked"
 $script:driverIdentity=$null
 try{
  $selfDetails=Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID) -ErrorAction Stop
@@ -100,62 +108,99 @@ function Trusted-Caller([int]$ProcessId){
  };return $false
 }
 function Pending-Match([string]$DialogText){
+ $script:pendingReason='missing-pending-record'
  $file=Join-Path $ProofDirectory 'ci-pending-launch.json'
  if(-not (Test-Path -LiteralPath $file -PathType Leaf)){return @()}
  try{
-  if((Get-Item -LiteralPath $file).Length -gt 4096){return @()}
+  if((Get-Item -LiteralPath $file).Length -gt 4096){$script:pendingReason='pending-record-too-large';return @()}
   $pending=Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
-  if(-not ($pending.path -is [string]) -or -not ($pending.sha256 -is [string]) -or $pending.sha256 -notmatch '^[0-9a-fA-F]{64}$'){return @()}
-  $callerId=[int]$pending.callerPid;if($callerId -le 0){return @()}
+  if(-not ($pending.path -is [string]) -or -not ($pending.sha256 -is [string]) -or $pending.sha256 -notmatch '^[0-9a-fA-F]{64}$'){$script:pendingReason='pending-record-invalid';return @()}
+  $callerId=[int]$pending.callerPid;if($callerId -le 0){$script:pendingReason='pending-caller-invalid';return @()}
   $when=[datetime]::Parse([string]$pending.utc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-  $age=([datetime]::UtcNow-$when).TotalSeconds;if($age -gt 120 -or $age -lt -10){return @()}
+  $age=([datetime]::UtcNow-$when).TotalSeconds;if($age -gt 120 -or $age -lt -10){$script:pendingReason='pending-expired-or-future';return @()}
   $live=Get-Process -Id $callerId -ErrorAction Stop
   if(-not $script:processInfo.ContainsKey($callerId)){
    $detail=Get-CimInstance Win32_Process -Filter ('ProcessId='+$callerId) -ErrorAction Stop
    if($detail){$script:processInfo[$callerId]=$detail}
   }
-  if(-not (Trusted-Caller $callerId)){return @()}
+  if(-not (Trusted-Caller $callerId)){$script:pendingReason='pending-caller-not-trusted';return @()}
   $full=[BakimCiConsent]::LongPath([IO.Path]::GetFullPath([string]$pending.path))
   $same=@($script:candidates | Where-Object {$_.path -ieq $full -and $_.sha256 -ieq $pending.sha256})
-  if($same.Count -eq 0 -or -not $script:knownHashes.ContainsKey($pending.sha256.ToLowerInvariant())){return @()}
-  if((Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash -ine $pending.sha256){return @()}
+  if($same.Count -eq 0 -or -not $script:knownHashes.ContainsKey($pending.sha256.ToLowerInvariant())){$script:pendingReason='pending-path-or-known-hash-mismatch';return @()}
+  if((Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash -ine $pending.sha256){$script:pendingReason='pending-file-hash-mismatch';return @()}
   $names=@($same | Where-Object {$DialogText -match ('(?i)(?<![A-Za-z0-9_-])'+[regex]::Escape($_.name)+'(?![A-Za-z0-9_.-])')})
-  if($names.Count -gt 0){return $names}
+  if($names.Count -gt 0){$script:pendingReason='pending-matched-filename';return $names}
   # VersionInfo may display the branded product name rather than the executable filename.
   $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($full)
   foreach($label in @($version.FileDescription,$version.ProductName)){
-   if($label -and $label -match '(?i)^Bak[ıi]m[. -]?TR.*Yard[ıi]m' -and $DialogText.IndexOf($label,[StringComparison]::OrdinalIgnoreCase) -ge 0){return $same}
+   if($label -and $label -match '(?i)^Bak[ıi]m[. -]?TR.*Yard[ıi]m' -and $DialogText.IndexOf($label,[StringComparison]::OrdinalIgnoreCase) -ge 0){$script:pendingReason='pending-matched-branded-versioninfo';return $same}
   }
- }catch{}
+  $script:pendingReason='pending-dialog-name-not-matched'
+ }catch{$script:pendingReason='pending-validation-exception'}
  return @()
 }
-function Text-And-Actions($Window,$Native){
+function Text-And-Actions($Window,$Native,[bool]$ReadUia=$true){
+ [void][BakimCiConsent]::PhysicalDpi()
  $texts=New-Object 'System.Collections.Generic.List[string]';$actions=New-Object 'System.Collections.Generic.List[object]';$texts.Add([string]$Window.Title)
  foreach($item in $Native){if($item.Title){$texts.Add([string]$item.Title)};if($item.ClassName -eq 'Button' -and $item.Visible -and $item.Enabled){$r=$item.Bounds;$actions.Add(@{name=[string]$item.Title;node=$null;handle=$item.Handle;rect=@($r.Left,$r.Top,($r.Right-$r.Left),($r.Bottom-$r.Top))})}}
- if($script:uia){try{$element=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Window.Handle);$items=$element.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition);foreach($item in $items){$c=$item.Current;if($c.Name){$texts.Add([string]$c.Name)};if($c.HelpText){$texts.Add([string]$c.HelpText)};try{$value=$item.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value;if($value){$texts.Add([string]$value)}}catch{};if($c.IsEnabled -and -not $c.IsOffscreen -and $c.Name){$r=$c.BoundingRectangle;if($r.Width -gt 1 -and $r.Height -gt 1){$actions.Add(@{name=[string]$c.Name;node=$item;handle=[long]$c.NativeWindowHandle;rect=@($r.X,$r.Y,$r.Width,$r.Height)})}}}}catch{}}
+ if($script:uia -and $ReadUia){try{$element=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Window.Handle);$wr=$element.Current.BoundingRectangle;if($wr.Width -gt 20 -and $wr.Height -gt 20){$script:dialogBounds[[long]$Window.Handle]=@($wr.X,$wr.Y,$wr.Width,$wr.Height)};$items=$element.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition);foreach($item in $items){$c=$item.Current;if($c.Name){$texts.Add([string]$c.Name)};if($c.HelpText){$texts.Add([string]$c.HelpText)};try{$value=$item.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value;if($value){$texts.Add([string]$value)}}catch{};if($c.IsEnabled -and -not $c.IsOffscreen -and $c.Name){$r=$c.BoundingRectangle;if($r.Width -gt 1 -and $r.Height -gt 1){$actions.Add(@{name=[string]$c.Name;node=$item;handle=[long]$c.NativeWindowHandle;rect=@($r.X,$r.Y,$r.Width,$r.Height)})}}}}catch{}}
  return @{text=($texts -join "`n");actions=$actions}
 }
 function Save-Dialog($Window){
- if(-not $script:drawing -or $script:captures -ge 12){return};$r=$Window.Bounds;$w=$r.Right-$r.Left;$h=$r.Bottom-$r.Top
+ if(-not $script:drawing -or $script:captures -ge 16){return};[void][BakimCiConsent]::PhysicalDpi();$r=$Window.Bounds;$left=$r.Left;$top=$r.Top;$w=$r.Right-$r.Left;$h=$r.Bottom-$r.Top;if($script:dialogBounds.ContainsKey([long]$Window.Handle)){$bounds=$script:dialogBounds[[long]$Window.Handle];$left=[int]$bounds[0];$top=[int]$bounds[1];$w=[int]$bounds[2];$h=[int]$bounds[3]}
  if($w -lt 20 -or $h -lt 20 -or $w -gt 2400 -or $h -gt 1600){return}
- try{$bitmap=New-Object System.Drawing.Bitmap($w,$h);$graphics=[System.Drawing.Graphics]::FromImage($bitmap);try{$graphics.CopyFromScreen($r.Left,$r.Top,0,0,$bitmap.Size);$script:captures++;$bitmap.Save((Join-Path $ProofDirectory ('ci-consent-dialog-{0:D2}.png' -f $script:captures)),[System.Drawing.Imaging.ImageFormat]::Png)}finally{$graphics.Dispose();$bitmap.Dispose()}}catch{Event @{event='dialog-crop-failed';error=Redact $_.Exception.Message}}
+ try{$bitmap=New-Object System.Drawing.Bitmap($w,$h);$graphics=[System.Drawing.Graphics]::FromImage($bitmap);try{$graphics.CopyFromScreen($left,$top,0,0,$bitmap.Size);$script:captures++;$bitmap.Save((Join-Path $ProofDirectory ('ci-consent-dialog-{0:D2}.png' -f $script:captures)),[System.Drawing.Imaging.ImageFormat]::Png)}finally{$graphics.Dispose();$bitmap.Dispose()}}catch{Event @{event='dialog-crop-failed';error=Redact $_.Exception.Message}}
+}
+function Write-Snapshot([string]$Reason){
+ if($script:snapshots -ge 48){return}
+ [void][BakimCiConsent]::PhysicalDpi();$script:snapshots++
+ $records=@()
+ foreach($w in @([BakimCiConsent]::AllWindows())){
+  $proc=$script:processInfo[[int]$w.ProcessId]
+  $security=($w.Title -match '(?i)SmartScreen|Security Warning|Windows protected|Windows Defender|Güvenlik Uyarısı|Windows.*korudu') -or ($proc -and $proc.Name -match '(?i)^smartscreen\.exe$')
+  $trustedModal=(Trusted-Caller ([int]$w.ProcessId)) -and ($w.Title -match '(?i)Window Dialog' -or $w.ClassName -match '(?i)^Static$|Modal|Dialog')
+  $proxy=$w.ClassName -match '(?i)ProxyModalWindow'
+  if(-not $w.Visible -and -not $security -and -not $trustedModal -and -not $proxy){continue}
+  $row=@{handle=$w.Handle;pid=$w.ProcessId;process=$(if($proc){$proc.Name}else{''});class=$w.ClassName;visible=$w.Visible;title=Redact $w.Title;nativeBounds=@($w.Bounds.Left,$w.Bounds.Top,($w.Bounds.Right-$w.Bounds.Left),($w.Bounds.Bottom-$w.Bounds.Top));reason=$(if($security){'security-window'}elseif($trustedModal){'trusted-caller-modal'}elseif($proxy){'explorer-proxy-modal'}else{'visible-summary'})}
+  if($security -or $trustedModal -or $proxy){
+   $children=@([BakimCiConsent]::Children($w.Handle));$detail=Text-And-Actions $w $children ([bool]($security -and $w.Visible))
+   $row['text']=Redact $detail.text
+   $row['nativeControls']=@($children | Select-Object -First 45 | ForEach-Object {@{handle=$_.Handle;class=$_.ClassName;visible=$_.Visible;enabled=$_.Enabled;text=Redact $_.Title;bounds=@($_.Bounds.Left,$_.Bounds.Top,($_.Bounds.Right-$_.Bounds.Left),($_.Bounds.Bottom-$_.Bounds.Top))}})
+   $row['candidateActions']=@($detail.actions | Select-Object -First 30 | ForEach-Object {@{name=Redact $_.name;handle=$_.handle;rect=$_.rect}})
+   if($script:dialogBounds.ContainsKey([long]$w.Handle)){$row['uiaPhysicalBounds']=$script:dialogBounds[[long]$w.Handle]}
+  }
+  $records+=$row
+  if($records.Count -ge 100){break}
+ }
+ $value=@{reason=$Reason;inputDesktop=[BakimCiConsent]::InputDesktopName();utc=[datetime]::UtcNow.ToString('o');pendingReason=$script:pendingReason;knownCandidateCount=$script:candidates.Count;windows=$records}
+ $json=$value | ConvertTo-Json -Depth 9
+ $json | Set-Content -LiteralPath $windowFile -Encoding UTF8
+ $json | Set-Content -LiteralPath (Join-Path $ProofDirectory ('ci-consent-snapshot-{0:D2}.json' -f $script:snapshots)) -Encoding UTF8
 }
 function Click-Action($Window,$Action,[int]$Attempt){
- $nativeHandle=[long]$Action.handle
- if($Attempt -eq 1 -and $Action.node){try{$Action.node.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke();return 'UIA-Invoke'}catch{}}
- if($Attempt -le 2 -and $nativeHandle -ne 0){try{$value=[UIntPtr]::Zero;$ok=[BakimCiConsent]::SendMessageTimeout([IntPtr]$nativeHandle,0xF5,[UIntPtr]::Zero,[IntPtr]::Zero,2,600,[ref]$value);if($ok -ne [IntPtr]::Zero){return 'Button-Click'}}catch{}}
- $r=$Action.rect;$outer=$Window.Bounds;$x=[int]($r[0]+$r[2]/2);$y=[int]($r[1]+$r[3]/2)
- if($x -lt $outer.Left -or $x -ge $outer.Right -or $y -lt $outer.Top -or $y -ge $outer.Bottom){return 'rejected-outside-dialog'}
- [void][BakimCiConsent]::ShowWindow([IntPtr]$Window.Handle,9);[void][BakimCiConsent]::SetForegroundWindow([IntPtr]$Window.Handle);Start-Sleep -Milliseconds 80
- [void][BakimCiConsent]::SetCursorPos($x,$y);[BakimCiConsent]::mouse_event(2,0,0,0,[UIntPtr]::Zero);[BakimCiConsent]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
- return 'Normal-Mouse-Click'
+ # Real mouse activation fires SmartScreen's click handler. InvokePattern can
+ # navigate the about:blank# hyperlink instead and is deliberately not used.
+ [void][BakimCiConsent]::PhysicalDpi()
+ $r=$Action.rect;$outer=$Window.Bounds
+ $left=$outer.Left;$top=$outer.Top;$right=$outer.Right;$bottom=$outer.Bottom
+ if($script:dialogBounds.ContainsKey([long]$Window.Handle)){$b=$script:dialogBounds[[long]$Window.Handle];$left=$b[0];$top=$b[1];$right=$left+$b[2];$bottom=$top+$b[3]}
+ $x=[int]($r[0]+$r[2]/2);$y=[int]($r[1]+$r[3]/2)
+ if($x -lt $left -or $x -ge $right -or $y -lt $top -or $y -ge $bottom){return 'rejected-outside-physical-dialog'}
+ [void][BakimCiConsent]::ShowWindow([IntPtr]$Window.Handle,9)
+ [void][BakimCiConsent]::SetForegroundWindow([IntPtr]$Window.Handle)
+ Start-Sleep -Milliseconds 150
+ if(-not [BakimCiConsent]::SetCursorPos($x,$y)){return 'normal-mouse-position-failed'}
+ [BakimCiConsent]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+ Start-Sleep -Milliseconds 60
+ [BakimCiConsent]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+ return 'Normal-Mouse-Click-First'
 }
 Event @{event='watcher-start';uia=$uia;nativeEnumeration=$true;securitySettingsChanged=$false;motwChanged=$false}
 $until=(Get-Date).AddSeconds($MaximumSeconds);$lastSnapshot=[DateTime]::MinValue
 while((Get-Date) -lt $until){
  try {
   Refresh-Known;$windows=@([BakimCiConsent]::Windows())
-  if(((Get-Date)-$lastSnapshot).TotalSeconds -ge 8){$lastSnapshot=Get-Date;@($windows | ForEach-Object {@{handle=$_.Handle;pid=$_.ProcessId;class=$_.ClassName;title=Redact $_.Title}}) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $windowFile -Encoding UTF8}
+  if(((Get-Date)-$lastSnapshot).TotalSeconds -ge 8){$lastSnapshot=Get-Date;Write-Snapshot 'periodic-security-and-trusted-modal'}
   foreach($window in $windows){
    $p=$script:processInfo[[int]$window.ProcessId];$securityTitle=$window.Title -match '(?i)Security Warning|Windows Security|SmartScreen|Windows protected|Windows Defender|Güvenlik Uyarısı|Windows.*korudu';$securityProcess=$p -and $p.Name -match '(?i)^smartscreen\.exe$'
    if(-not $securityTitle -and -not $securityProcess -and $window.ClassName -ne '#32770'){continue}
@@ -173,7 +218,8 @@ while((Get-Date) -lt $until){
     $action=@($content.actions | Where-Object {(($_.name -replace '&','') -replace '\s+',' ').Trim() -ieq $wanted} | Select-Object -First 1);if($action.Count -eq 0){continue}
     $actionKey=[string]$window.Handle+'|'+$wanted;if($lastClick.ContainsKey($actionKey) -and ((Get-Date)-$lastClick[$actionKey]).TotalSeconds -lt 1.2){break};$lastClick[$actionKey]=Get-Date
     if(-not $attempts.ContainsKey($actionKey)){$attempts[$actionKey]=0};$attempts[$actionKey]++;if($attempts[$actionKey] -gt 4){break}
-    $method=Click-Action $window $action[0] $attempts[$actionKey];Event @{event=$(if($informationOnly){'information-only-more-info'}else{'normal-fixture-user-consent'});handle=$window.Handle;action=$wanted;method=$method;attempt=$attempts[$actionKey];authorization=$(if($informationOnly -and $matched.Count -eq 0){'information-only-no-execution'}else{$authorization})};break
+    Write-Snapshot ('before-normal-mouse-'+$wanted)
+    $method=Click-Action $window $action[0] $attempts[$actionKey];Start-Sleep -Milliseconds 350;Write-Snapshot ('after-normal-mouse-'+$wanted);Event @{event=$(if($informationOnly){'information-only-more-info'}else{'normal-fixture-user-consent'});handle=$window.Handle;action=$wanted;method=$method;attempt=$attempts[$actionKey];authorization=$(if($informationOnly -and $matched.Count -eq 0){'information-only-no-execution'}else{$authorization})};break
    }
   }
  }catch{Event @{event='watcher-iteration-error';error=Redact $_.Exception.Message}}

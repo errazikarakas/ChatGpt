@@ -1,4 +1,5 @@
 name: Bakım.TR Yardım clean obsolete test watchers
+# Watchers never wait for artifacts; verification is explicitly triggered after a real build succeeds.
 'on':
   push:
     branches: [bakim-yardim-build]

@@ -4,9 +4,7 @@ name: Bakım.TR Yardım Windows remote verification
     branches:
     - bakim-yardim-build
     paths:
-    - ci/windows-remote-smoke.ps1
-    - .github/workflows/bakim-yardim-windows-smoke.yml
-    - ci/finalize_windows.py
+    - ci/windows-verify-trigger.json
   workflow_dispatch: {}
 permissions:
   contents: read
@@ -22,11 +20,19 @@ jobs:
     - name: Download original compiled portable client
       env:
         GH_TOKEN: ${{ github.token }}
-      run: "New-Item -ItemType Directory -Force app | Out-Null\nfor ($i=0; $i -lt 200; $i++) {\n $ids=gh api 'repos/errazikarakas/ChatGpt/actions/workflows/bakim-yardim.yml/runs?branch=bakim-yardim-build&per_page=30'\
-        \ --jq '.workflow_runs[] | select((.head_commit.message // \"\") | startswith(\"[windows-only]\")) | .id'\n $build=[string]($ids | Select-Object -First 1)\n if ($build) {\n  gh run download $build\
-        \ --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows --dir app\n  if ($LASTEXITCODE -eq 0 -and (Test-Path app/Bakim-TR-Yardim.exe)) { \"ORIGINAL_BUILD_RUN=$build\" >> $env:GITHUB_ENV; break\
-        \ }\n  $state=gh run view $build --repo errazikarakas/ChatGpt --json status,conclusion | ConvertFrom-Json\n  if($state.status -eq 'completed' -and $state.conclusion -ne 'success'){throw 'Newest\
-        \ Windows source build did not produce a validated executable'}\n }\n Start-Sleep 15\n}\nif (-not(Test-Path app/Bakim-TR-Yardim.exe)) { throw 'Compiled Windows client is unavailable' }"
+      run: 'New-Item -ItemType Directory -Force app | Out-Null
+
+        $trigger=Get-Content ci/windows-verify-trigger.json -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $build=[string]$trigger.runId
+
+        if($build -notmatch ''^\d{8,15}$''){throw ''Invalid explicit build reference''}
+
+        gh run download $build --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows --dir app
+
+        if($LASTEXITCODE -ne 0 -or -not(Test-Path app/Bakim-TR-Yardim.exe)){throw ''Validated Windows executable is unavailable''}
+
+        "ORIGINAL_BUILD_RUN=$build" >> $env:GITHUB_ENV'
     - name: Finalize branded asset and isolated portable cache
       run: 'python -m pip install pillow brotli
 

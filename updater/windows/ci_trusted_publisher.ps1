@@ -74,7 +74,7 @@ function Invoke-BoundedPowerShell([string]$Step, [hashtable]$InputData, [string]
   $worker = '$ErrorActionPreference="Stop"; $ProgressPreference="SilentlyContinue"; try { Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $data=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $encodedData + '")) | ConvertFrom-Json); $result = & { ' + $Code + ' }; [IO.File]::WriteAllText($data.resultPath,($result | ConvertTo-Json -Compress -Depth 6),[Text.Encoding]::UTF8); exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
   $encodedWorker = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($worker))
   try {
-    Invoke-BoundedProcess -Executable (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Arguments @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedWorker) -Step $Step -Leaf $Leaf
+    Invoke-BoundedProcess -Executable (Get-Command pwsh.exe -ErrorAction Stop).Source -Arguments @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedWorker) -Step $Step -Leaf $Leaf
     if (-not (Test-Path -LiteralPath $resultPath)) { throw ('Laboratory worker returned no result: ' + $Step) }
     return (Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json)
   } finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }

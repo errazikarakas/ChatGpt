@@ -56,7 +56,7 @@ func ciCatalog(t *testing.T, path string) {
 	if script == "" {
 		return
 	}
-	command := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "Add", "-File", path, "-ProofDirectory", filepath.Dir(os.Getenv("BAKIM_CI_PENDING")))
+	command := exec.Command("pwsh.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "Add", "-File", path, "-ProofDirectory", filepath.Dir(os.Getenv("BAKIM_CI_PENDING")))
 	if result, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("ephemeral publisher catalog registration failed: %v\n%s", err, result)
 	}

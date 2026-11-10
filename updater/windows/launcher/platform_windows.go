@@ -104,7 +104,7 @@ func processes() map[uint32]string {
 	ok, _, _ := processFirst.Call(h, uintptr(unsafe.Pointer(&e)))
 	for ok != 0 {
 		name := syscall.UTF16ToString(e.File[:])
-		if strings.EqualFold(name, engineName) || strings.EqualFold(name, "engine.exe") || strings.EqualFold(name, "Bakim-TR-Yardim.exe") {
+		if strings.EqualFold(name, engineName) || strings.EqualFold(name, "engine.exe") || strings.EqualFold(name, "Bakim-TR-Yardim.exe") || strings.EqualFold(name, "launcher.exe") {
 			if e.PID != uint32(os.Getpid()) {
 				ph, _, _ := openProcess.Call(0x1000, 0, uintptr(e.PID))
 				if ph != 0 {
@@ -126,10 +126,14 @@ func (p *windowsPlatform) ours() map[uint32]string {
 	result := map[uint32]string{}
 	local, _ := os.UserCacheDir()
 	native := strings.ToLower(filepath.Join(local, "bakım.tr yardım")) + string(os.PathSeparator)
-	prefix := strings.ToLower(p.root) + string(os.PathSeparator)
+	prefix := strings.ToLower(filepath.Join(p.root, "versions")) + string(os.PathSeparator)
 	for pid, path := range processes() {
 		low := strings.ToLower(path)
-		if strings.HasPrefix(low, prefix) || strings.HasPrefix(low, native) || strings.EqualFold(filepath.Base(path), "Bakim-TR-Yardim.exe") {
+		if strings.HasPrefix(low, prefix) || strings.HasPrefix(low, native) {
+			result[pid] = path
+			continue
+		}
+		if strings.EqualFold(filepath.Base(path), "Bakim-TR-Yardim.exe") && checkedFile(path, seedSHA256, seedSize) == nil {
 			result[pid] = path
 		}
 	}
@@ -205,13 +209,13 @@ func withAttachment(path, source string, execute bool) error {
 	defer runtime.UnlockOSThread()
 	hr, _, _ := coInitialize.Call(0, 2)
 	if err := hrError(hr); err != nil {
-		return err
+		return fmt.Errorf("Attachment CoInitialize: %w", err)
 	}
 	defer coUninitialize.Call()
 	var object uintptr
 	hr, _, _ = coCreate.Call(uintptr(unsafe.Pointer(&attachmentClass)), 0, 1, uintptr(unsafe.Pointer(&attachmentIID)), uintptr(unsafe.Pointer(&object)))
 	if err := hrError(hr); err != nil {
-		return err
+		return fmt.Errorf("Attachment CoCreate: %w", err)
 	}
 	table := *(*uintptr)(unsafe.Pointer(object))
 	method := func(index uintptr, args ...uintptr) uintptr {
@@ -246,14 +250,20 @@ func withAttachment(path, source string, execute bool) error {
 	}
 	if execute {
 		var handle uintptr
-		hr = method(12, 0, 0, uintptr(unsafe.Pointer(&handle)))
+		fn := *(*uintptr)(unsafe.Pointer(table + 12*unsafe.Sizeof(uintptr(0))))
+		// Pass the Go pointer directly to the syscall's uintptr-escape boundary.
+		// Sending it through an untyped helper could leave it on a movable stack.
+		hr, _, _ = syscall.SyscallN(fn, object, 0, 0, uintptr(unsafe.Pointer(&handle)))
 		if handle != 0 {
 			closeHandle.Call(handle)
 		}
 		if uint32(hr) == 0x800704c7 || uint32(hr) == 0x80004004 {
 			return errUserDeclined
 		}
-		return hrError(hr)
+		if err := hrError(hr); err != nil {
+			return fmt.Errorf("Attachment Execute: %w", err)
+		}
+		return nil
 	}
 	if err := hrError(method(11)); err != nil {
 		return fmt.Errorf("Attachment Save: %w", err)

@@ -3,7 +3,8 @@ $ErrorActionPreference='Stop'
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
 $out=(Resolve-Path $OutputDirectory).Path
 $exe=(Resolve-Path $Executable).Path
-$config=Get-Content '../branding/client-public.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+$configFile=if(Test-Path '../branding/client-public.json'){'../branding/client-public.json'}else{'branding/client-public.json'}
+$config=Get-Content $configFile -Raw -Encoding UTF8 | ConvertFrom-Json
 # Verify the real packed executable starts and loads its embedded server configuration.
 $public=Join-Path $out 'runtime-public-config.json'
 Start-Process -FilePath $exe -ArgumentList @('--bakim-public-config', ('"'+$public+'"')) -Wait
@@ -13,7 +14,8 @@ $runtime=Get-Content $public -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach($key in @('appName','idServer','relayServer','publicKey')){if($runtime.$key -cne $config.$key){throw "Embedded runtime configuration mismatch: $key"}}
 if(-not $runtime.installationDisabled -or $runtime.fileTransfer -ne 'N' -or $runtime.clipboard -ne 'Y'){throw 'Runtime permission policy mismatch'}
 # Test the external protocol and relay from Microsoft's independent Windows runner.
-python ../ci/network_probe.py --host xn--bakm-nza.tr --key $config.publicKey --output (Join-Path $out 'external-network.json')
+$probe=if(Test-Path '../ci/network_probe.py'){'../ci/network_probe.py'}else{'ci/network_probe.py'}
+python $probe --host xn--bakm-nza.tr --key $config.publicKey --output (Join-Path $out 'external-network.json')
 if($LASTEXITCODE -ne 0){throw 'External server protocol probe failed'}
 $app=Start-Process -FilePath $exe -PassThru
 Start-Sleep 25

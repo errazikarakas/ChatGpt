@@ -6,6 +6,7 @@ name: Bakım.TR Yardım Windows remote session test
     paths:
     - ci/windows-remote-smoke.ps1
     - .github/workflows/bakim-yardim-windows-smoke.yml
+    - ci/finalize_windows.py
   workflow_dispatch: {}
 permissions:
   contents: read
@@ -23,8 +24,40 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: "New-Item -ItemType Directory -Force app | Out-Null\nfor ($i=0; $i -lt 200; $i++) {\n gh run download 42887318323 --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows --dir app\n if ($LASTEXITCODE\
         \ -eq 0 -and (Test-Path app/Bakim-TR-Yardim.exe)) { break }\n Start-Sleep 15\n}\nif (-not(Test-Path app/Bakim-TR-Yardim.exe)) { throw 'Compiled Windows client is unavailable' }"
+    - name: Finalize branded asset and isolated portable cache
+      run: 'python -m pip install pillow brotli
+
+        python ci/finalize_windows.py --input app/Bakim-TR-Yardim.exe --output release/Bakim-TR-Yardim.exe --config branding/client-public.json
+
+        Copy-Item app/NOTICE.txt release/NOTICE.txt
+
+        Copy-Item app/AGPL-3.0.txt release/AGPL-3.0.txt
+
+        Copy-Item branding/client-public.json release/client-public.json'
+    - name: Smoke-test final distributable
+      run: 'New-Item -ItemType Directory -Force final-smoke-work | Out-Null
+
+        Copy-Item ci/network_probe.py final-smoke-work/network_probe.py
+
+        powershell -ExecutionPolicy Bypass -File ci/windows-smoke.ps1 -Executable release/Bakim-TR-Yardim.exe -OutputDirectory release/proof
+
+        $inner=Join-Path $env:LOCALAPPDATA "bakim-tr-yardim/Bakim-TR-Yardim.exe"
+
+        $icon=Join-Path $env:LOCALAPPDATA "bakim-tr-yardim/data/flutter_assets/assets/icon.png"
+
+        if(-not(Test-Path $inner)-or -not(Test-Path $icon)){throw "Isolated cache or branded icon absent"}
+
+        $proof=Get-Content release/finalization.json -Raw | ConvertFrom-Json
+
+        if((Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant() -ne $proof.iconSha256){throw "Extracted icon hash mismatch"}'
+    - name: Upload final Windows distributable
+      uses: actions/upload-artifact@v4
+      with:
+        name: Bakim-TR-Yardim-Windows-Final
+        path: release/*
+        retention-days: 30
     - name: Connect to isolated real Linux desktop
-      run: powershell -ExecutionPolicy Bypass -File ci/windows-remote-smoke.ps1 -Executable app/Bakim-TR-Yardim.exe -OutputDirectory remote-proof
+      run: powershell -ExecutionPolicy Bypass -File ci/windows-remote-smoke.ps1 -Executable release/Bakim-TR-Yardim.exe -OutputDirectory remote-proof
     - uses: actions/upload-artifact@v4
       if: always()
       with:

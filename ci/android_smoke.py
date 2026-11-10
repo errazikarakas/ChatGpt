@@ -57,6 +57,15 @@ try:
   badging=subprocess.check_output([str(aapts[-1]),'dump','badging',str(a.apk)],text=True)
   report['labelMatched']=APP in badging and "package: name='tr.bakim.yardim'" in badging
  adb('wait-for-device',timeout=60);adb('logcat','-c');adb('install','-r','-t',a.apk,timeout=90)
+ # Stateless protocol check from inside the AVD, separate from app/service UI.
+ # Unknown RegisterPeer asks for a public key and does not create a device row.
+ try:
+  probe_id=b'bakim-avd-network-probe';inner=b'\x0a'+bytes([len(probe_id)])+probe_id;packet=b'\x32'+bytes([len(inner)])+inner
+  probe=subprocess.run(['adb','shell','toybox','nc','-u','-w','5','xn--bakm-nza.tr','21116'],input=packet,capture_output=True,timeout=12)
+  report['avdUdpProbeSupported']=probe.returncode==0
+  report['avdUdpOwnServerResponded']=b'\x3a\x02\x10\x01' in probe.stdout
+ except Exception:
+  report['avdUdpProbeSupported']=False;report['avdUdpOwnServerResponded']=False
  # Test fixture grants only to this app on this disposable emulator. These are
  # the same permissions a person must approve on a physical phone; the release
  # app does not contain ADB or any permission bypass.
@@ -90,6 +99,8 @@ try:
      w,h=map(int,m.groups());adb('shell','input','tap',int(w*0.625),h-28);initial_fallback=True;report['uiActions'].append('share_tab_coordinate_fallback')
   if report['nativeDiagnosticReady'] and report['ownServerConfigMatched'] and report['disabledFeaturesMatched'] and report['online'] and report['idPresent']:break
  logs=adb('logcat','-d',check=False).decode(errors='replace')
+ report['normalHostCallbackStarted']='BAKIM_SMOKE_NORMAL_HOST_CALLBACK_START' in logs
+ report['normalHostCallbackReturned']='BAKIM_SMOKE_NORMAL_HOST_CALLBACK_RETURNED' in logs
  report['noPublicServerInLogs']=not any(host in logs.lower() for host in ('rs-ny.rustdesk.com','rs-sg.rustdesk.com','rs-cn.rustdesk.com'))
  report['nativeCrashObserved']=bool(re.search(r'AndroidRuntime.*Process: '+re.escape(PACKAGE)+r'[,\s]',logs)) or ('signal 11 (SIGSEGV)' in logs and PACKAGE in logs)
  activities=adb('shell','dumpsys','activity','activities',check=False).decode(errors='replace')

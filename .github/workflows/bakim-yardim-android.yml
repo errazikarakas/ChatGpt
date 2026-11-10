@@ -151,6 +151,9 @@ jobs:
 
         python3 ../ci/android_patch.py --source . --logo ../branding/logo.png --upstream-apk native-input/upstream-1.5.1-x86_64.apk --abi x86_64
 
+
+        python3 ../ci/android_test_start.py --source .
+
         '
     - name: Upstream Flutter compatibility patch
       run: "sdk=\"$(dirname \"$(dirname \"$(command -v flutter)\")\")\"\npatch=\"$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff\"\nif git -C \"$sdk\" apply --check \"$patch\"; then\n\

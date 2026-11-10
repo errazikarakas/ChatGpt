@@ -98,7 +98,7 @@ jobs:
         name: bakim-yardim-android-arm64
         path: rustdesk/artifacts/*
         retention-days: 14
-    if: ${{ contains(github.event.head_commit.message, '[android-only]') || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (contains(github.event.head_commit.message, '[android-only]') || github.event_name == 'workflow_dispatch') && !contains(github.event.head_commit.message, '[android-e2e-only]') }}
   android-e2e:
     name: Android native launch and own-server test
     runs-on: ubuntu-24.04

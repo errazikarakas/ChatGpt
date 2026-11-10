@@ -14,7 +14,9 @@ def norm(s):return unicodedata.normalize('NFKD',s).casefold().replace('\u0307','
 def tap_bounds(bounds):
  m=re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',bounds or '')
  if not m:return False
- x1,y1,x2,y2=map(int,m.groups());adb('shell','input','tap',(x1+x2)//2,(y1+y2)//2);return True
+ x1,y1,x2,y2=map(int,m.groups())
+ if x2<=x1 or y2<=y1:return False
+ adb('shell','input','tap',(x1+x2)//2,(y1+y2)//2);return True
 
 def ui_nodes():
  adb('shell','uiautomator','dump','/sdcard/bakim-ui.xml',timeout=20,check=False)
@@ -24,19 +26,29 @@ def ui_nodes():
 
 def auto_os_and_screen(nodes):
  # Only our disposable emulator is touched; production app still requires user OS approval.
- choices=('allow','while using the app','start now','start recording','share screen','start service','ok','tamam','izin ver','uygulamayı kullanırken','şimdi başlat','ekranı paylaş','ekran paylaşımı','hizmeti başlat','servisi başlat')
+ # Dialog confirmations must win over the navigation tab underneath them.
+ # RustDesk's first host startup also has a deliberate twelve-second warning.
  for node in nodes:
-  text=norm(node.get('text','')+' '+node.get('content-desc','')).strip();rid=node.get('resource-id','')
-  if rid.endswith(('/permission_allow_button','/permission_allow_foreground_only_button','/start_button')) or any(text==norm(x) or text.startswith(norm(x)+'\n') or text.startswith(norm(x)+' tab ') for x in choices):
-   if node.get('enabled')=='true' and tap_bounds(node.get('bounds')):return True
- return False
+  rid=node.get('resource-id','')
+  if rid.endswith(('/permission_allow_button','/permission_allow_foreground_only_button','/start_button')) and node.get('enabled')=='true' and tap_bounds(node.get('bounds')):return 'os_permission'
+ choices=('i agree','kabul ediyorum','start now','start recording','şimdi başlat','kaydı başlat','ok','tamam','allow','while using the app','izin ver','uygulamayı kullanırken','start service','hizmeti başlat','servisi başlat','screen capture','ekran görüntüsü','share screen','ekranı paylaş','ekran paylaşımı')
+ for choice in choices:
+  key=norm(choice)
+  for node in nodes:
+   text=norm(node.get('text','')+' '+node.get('content-desc','')).strip()
+   if node.get('enabled')!='true':continue
+   if node.get('selected')=='true' and choice in ('share screen','ekranı paylaş','ekran paylaşımı'):continue
+   if node.get('checked')=='true' and choice in ('screen capture','ekran görüntüsü'):continue
+   if text==key or text.startswith(key+'\n') or text.startswith(key+' tab '):
+    if tap_bounds(node.get('bounds')):return choice
+ return None
 
 def read_heartbeat():
  raw=adb('shell','run-as',PACKAGE,'cat','app_flutter/bakim-smoke.json',check=False).decode(errors='replace')
  try:return json.loads(raw)
  except Exception:return {}
 
-report={'app':'Bakım.TR Yardım','testPackage':PACKAGE,'testApkSha256':hashlib.sha256(a.apk.read_bytes()).hexdigest(),'realNativeApplicationLaunch':False,'labelMatched':False,'nativeDiagnosticReady':False,'idPresent':False,'online':False,'ownServerConfigMatched':False,'disabledFeaturesMatched':False,'noPublicServerInLogs':None,'physicalPhoneTested':False,'smokeRuntimeOnly':True}
+report={'app':'Bakım.TR Yardım','testPackage':PACKAGE,'testApkSha256':hashlib.sha256(a.apk.read_bytes()).hexdigest(),'realNativeApplicationLaunch':False,'labelMatched':False,'nativeDiagnosticReady':False,'idPresent':False,'online':False,'ownServerConfigMatched':False,'disabledFeaturesMatched':False,'noPublicServerInLogs':None,'physicalPhoneTested':False,'smokeRuntimeOnly':True,'uiActions':[]}
 started=time.time();heartbeat={};error=None
 try:
  sdk=pathlib.Path(os.environ.get('ANDROID_HOME',os.environ.get('ANDROID_SDK_ROOT','/usr/local/lib/android/sdk')))
@@ -70,16 +82,24 @@ try:
    nodes=ui_nodes();texts=[n.get('text','')+' '+n.get('content-desc','') for n in nodes]
    report['labelMatched']=report['labelMatched'] or any(APP in t for t in texts)
    acted=auto_os_and_screen(nodes);last_ui=time.time()
+   if acted and len(report['uiActions'])<40:report['uiActions'].append(acted)
    # Flutter semantics may be absent before Android accessibility is enabled.
    if not acted and not initial_fallback and time.time()-started>15:
     size=adb('shell','wm','size').decode();m=re.search(r'(\d+)x(\d+)',size)
     if m:
-     w,h=map(int,m.groups());adb('shell','input','tap',int(w*0.625),h-28);initial_fallback=True
+     w,h=map(int,m.groups());adb('shell','input','tap',int(w*0.625),h-28);initial_fallback=True;report['uiActions'].append('share_tab_coordinate_fallback')
   if report['nativeDiagnosticReady'] and report['ownServerConfigMatched'] and report['disabledFeaturesMatched'] and report['online'] and report['idPresent']:break
  logs=adb('logcat','-d',check=False).decode(errors='replace')
  report['noPublicServerInLogs']=not any(host in logs.lower() for host in ('rs-ny.rustdesk.com','rs-sg.rustdesk.com','rs-cn.rustdesk.com'))
- report['nativeCrashObserved']=('FATAL EXCEPTION' in logs and PACKAGE in logs) or 'signal 11 (SIGSEGV)' in logs
- report['labelMatched']=report['labelMatched'] or APP in adb('shell','dumpsys','activity','activities',check=False).decode(errors='replace')
+ report['nativeCrashObserved']=bool(re.search(r'AndroidRuntime.*Process: '+re.escape(PACKAGE)+r'[,\s]',logs)) or ('signal 11 (SIGSEGV)' in logs and PACKAGE in logs)
+ activities=adb('shell','dumpsys','activity','activities',check=False).decode(errors='replace')
+ report['labelMatched']=report['labelMatched'] or APP in activities
+ resumed=re.search(r'mResumedActivity:.*? ([A-Za-z0-9_.]+/[A-Za-z0-9_.$]+)',activities)
+ report['lastActivityComponent']=resumed.group(1) if resumed else None
+ services=adb('shell','dumpsys','activity','services',PACKAGE,check=False).decode(errors='replace')
+ report['androidHostServiceRunning']='MainService' in services
+ projection=adb('shell','dumpsys','media_projection',check=False).decode(errors='replace')
+ report['mediaProjectionActive']=PACKAGE in projection
  # Private config is inspected only for non-secret public presets, never exported.
  raw=adb('shell','run-as',PACKAGE,'cat','app_flutter/RustDesk2.toml',check=False).decode(errors='replace')
  report['persistedOwnServerMatched']=all(v in raw for v in (EXPECTED['custom-rendezvous-server'],EXPECTED['relay-server'],EXPECTED['key']))

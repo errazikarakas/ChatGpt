@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Apply auditable Bakım.TR support branding to the exact upstream RustDesk 1.5.1 source."""
-import argparse,base64,json,re,shutil,urllib.request,hashlib
+import argparse,base64,json,re,shutil,urllib.request,hashlib,sys
+if hasattr(sys.stdout,"reconfigure"): sys.stdout.reconfigure(encoding="utf-8")
 from pathlib import Path
 from PIL import Image
 
@@ -25,7 +26,7 @@ if a.native:
  patch(path,'RwLock::new("RustDesk".to_owned())','RwLock::new('+rs(cfg['appName'])+'.to_owned())')
  patch(path,'pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];','pub const RENDEZVOUS_SERVERS: &[&str] = &['+rs(cfg['idServer'])+'];')
  patch(path,'pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";','pub const RS_PUB_KEY: &str = '+rs(cfg['publicKey'])+';')
- for name,values in [('OVERWRITE_SETTINGS',settings),('HARD_SETTINGS',{'disable-installation':'Y','disable-account':'Y','disable-ab':'Y'}),('DEFAULT_LOCAL_SETTINGS',{'lang':'tr'})]:
+ for name,values in [('OVERWRITE_SETTINGS',settings),('HARD_SETTINGS',{'disable-installation':'Y','disable-account':'Y','disable-ab':'Y'}),('DEFAULT_LOCAL_SETTINGS',{'lang':'tr'}),('BUILTIN_SETTINGS',{'register-device':'N'})]:
   patch(path,'pub static ref '+name+': RwLock<HashMap<String, String>> = Default::default();','pub static ref '+name+': RwLock<HashMap<String, String>> = '+rust_map(values)+';')
  # Public diagnostic endpoint for release smoke tests; no IDs, passwords or private keys are emitted.
  diagnostic = """if args[0] == "--bakim-public-config" {
@@ -38,6 +39,7 @@ if a.native:
                 "fileTransfer": config::Config::get_option("enable-file-transfer"),
                 "clipboard": config::Config::get_option("enable-clipboard"),
                 "installationDisabled": config::is_disable_installation(),
+                "apiRegistration": crate::common::get_builtin_option("register-device"),
                 "keyConfirmed": config::Config::get_key_confirmed()
             });
             if let Some(path) = args.get(1) {
@@ -62,6 +64,7 @@ for path in ['flutter/windows/runner/Runner.rc','libs/portable/Cargo.toml']:
 logo=Image.open(overlay/'branding/logo.png').convert('RGBA')
 for name in ['logo.png','logo_light.png','logo_dark.png']:
  logo.save(root/'flutter/assets'/name)
+icon=logo.copy();icon.thumbnail((256,256),Image.Resampling.LANCZOS);icon.save(root/'flutter/assets/icon.png')
 for path in ['res/icon.ico','flutter/windows/runner/resources/app_icon.ico']:
  logo.save(root/path,format='ICO',sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
 # Portable container metadata has its own icon and app identity.
@@ -69,4 +72,4 @@ for path in ['res/icon.ico','flutter/windows/runner/resources/app_icon.ico']:
 shutil.copy2(overlay/'branding/client-public.json',root/'branding/client-public.json')
 shutil.copy2(root/'LICENCE',root/'branding/AGPL-3.0.txt')
 (root/'branding/NOTICE.txt').write_text('Bakım.TR Yardım\nRustDesk 1.5.1 tabanlıdır. RustDesk ve bağımlılıklarının telif/lisans bildirimleri korunmuştur.\nKaynak: '+cfg['sourceUrl']+'\n',encoding='utf-8')
-print('Bakım.TR Yardım brand, public server binding and permission policy applied; no private credentials used.')
+print('Bakim.TR Yardim brand, fixed server and permission policy applied; no private credentials used.')

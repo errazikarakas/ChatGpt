@@ -15,10 +15,12 @@ env:
   RUST_VERSION: '1.75'
   LLVM_VERSION: 15.0.6
   FLUTTER_VERSION: 3.24.5
-  VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+  VCPKG_BINARY_SOURCES: clear;files,C:/vcpkg-binary-cache,readwrite
   VCPKG_COMMIT_ID: 9e593bb18ea69cc5095e012465dcd675a822ed0d
   VCPKG_CMAKE_VERSION: 4.3.0
   VERSION: 1.5.1
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
 jobs:
   network:
     name: External server protocol test
@@ -109,7 +111,7 @@ jobs:
     defaults:
       run:
         working-directory: rustdesk
-    if: ${{ !contains(github.event.head_commit.message, '[android-only]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[android-only]') && !contains(github.event.head_commit.message, '[windows-only]') }}
   windows:
     name: Windows portable x64
     runs-on: windows-2022
@@ -130,6 +132,13 @@ jobs:
         submodules: recursive
         path: rustdesk
         persist-credentials: false
+    - name: Apply Bakım.TR brand and fixed server policy
+      run: 'python -m pip install pillow
+
+        python ../ci/apply_branding.py --source . --overlay .. --native'
+    - name: Unicode and package policy preflight
+      run: python -c "import json,pathlib; c=json.loads(pathlib.Path('../branding/client-public.json').read_text(encoding='utf-8')); assert c['appName']=='Bakım.TR Yardım'; assert pathlib.Path('flutter/assets/icon.png').is_file();
+        s=pathlib.Path('libs/hbb_common/src/config.rs').read_text(encoding='utf-8'); assert 'register-device' in s; print(c['appName'])"
     - name: Export GitHub Actions cache environment variables
       uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
       with:
@@ -175,12 +184,18 @@ jobs:
       with:
         prefix-key: windows-2022
         workspaces: rustdesk -> target
+        cache-on-failure: true
     - name: Setup vcpkg with Github Actions binary cache
       uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
       with:
         vcpkgDirectory: C:\vcpkg
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
         doNotCache: false
+    - name: Restore compiled codec binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: C:/vcpkg-binary-cache
+        key: bakim-vcpkg-windows-x64-${{ env.VCPKG_COMMIT_ID }}-v1
     - name: Install vcpkg dependencies
       env:
         VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
@@ -188,22 +203,27 @@ jobs:
         \ do\n    echo \"$_1:\"\n    echo \"======\"\n    cat \"$_1\"\n    echo \"======\"\n    echo \"\"\n  done\n  exit 1\nfi\nhead -n 100 \"${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-windows-static-rel-out.log\"\
         \ || true\n"
       shell: bash
+    - name: Save compiled codec binary cache immediately
+      if: always()
+      continue-on-error: true
+      uses: actions/cache/save@v4
+      with:
+        path: C:/vcpkg-binary-cache
+        key: bakim-vcpkg-windows-x64-${{ env.VCPKG_COMMIT_ID }}-v1
     - name: Restore generated bridge
       shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
-      run: "for ($i=0; $i -lt 60; $i++) {\n  gh run download ${{ github.run_id }} --repo ${{ github.repository }} --name bridge-artifact --dir .\n  if ($LASTEXITCODE -eq 0) { break }\n  Start-Sleep 15\n\
-        }\nif (-not (Test-Path 'flutter/lib/generated_bridge.dart')) { throw 'Bridge artifact not available' }"
-    - name: Apply Bakım.TR brand and fixed server policy
-      run: 'python -m pip install pillow
-
-        python ../ci/apply_branding.py --source . --overlay .. --native'
+      run: "for ($i=0; $i -lt 60; $i++) {\n  gh run download 42887318323 --repo ${{ github.repository }} --name bridge-artifact --dir .\n  if ($LASTEXITCODE -eq 0) { break }\n  Start-Sleep 15\n}\nif (-not\
+        \ (Test-Path 'flutter/lib/generated_bridge.dart')) { throw 'Bridge artifact not available' }"
     - name: Build branded client from source
       run: 'python build.py --portable --flutter --skip-portable-pack --hwcodec
 
         if ($LASTEXITCODE -ne 0) { throw "RustDesk source build failed" }
 
         Move-Item ./flutter/build/windows/x64/runner/Release ./rustdesk
+
+        Rename-Item ./rustdesk/rustdesk.exe Bakim-TR-Yardim.exe
 
         Copy-Item ../branding/client-public.json ./rustdesk/client-public.json
 
@@ -218,7 +238,7 @@ jobs:
 
         python -m pip install -r requirements.txt
 
-        python generate.py -f ../../rustdesk -o . -e ../../rustdesk/rustdesk.exe
+        python generate.py -f ../../rustdesk -o . -e ../../rustdesk/Bakim-TR-Yardim.exe
 
         cd ../..
 
@@ -328,4 +348,4 @@ jobs:
         name: bakim-yardim-android-arm64
         path: rustdesk/artifacts/*
         retention-days: 14
-    if: ${{ !contains(github.event.head_commit.message, '[android-only]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[android-only]') && !contains(github.event.head_commit.message, '[windows-only]') }}

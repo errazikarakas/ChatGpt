@@ -1,0 +1,33 @@
+name: Bakım.TR Yardım Windows remote session test
+'on':
+  push:
+    branches:
+    - bakim-yardim-build
+    paths:
+    - ci/windows-remote-smoke.ps1
+    - .github/workflows/bakim-yardim-windows-smoke.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  remote-session:
+    runs-on: windows-2022
+    timeout-minutes: 70
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Download original compiled portable client
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "New-Item -ItemType Directory -Force app | Out-Null\nfor ($i=0; $i -lt 200; $i++) {\n gh run download 42887318323 --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows --dir app\n if ($LASTEXITCODE\
+        \ -eq 0 -and (Test-Path app/Bakim-TR-Yardim.exe)) { break }\n Start-Sleep 15\n}\nif (-not(Test-Path app/Bakim-TR-Yardim.exe)) { throw 'Compiled Windows client is unavailable' }"
+    - name: Connect to isolated real Linux desktop
+      run: powershell -ExecutionPolicy Bypass -File ci/windows-remote-smoke.ps1 -Executable app/Bakim-TR-Yardim.exe -OutputDirectory remote-proof
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: bakim-yardim-windows-remote-e2e
+        path: remote-proof/*
+        retention-days: 14

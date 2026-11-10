@@ -50,6 +50,8 @@ jobs:
         python-version: '3.11'
     - name: Android SDK
       uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
     - name: Android platform and build tools
       run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
     - name: Flutter matching upstream mobile release
@@ -96,4 +98,98 @@ jobs:
         name: bakim-yardim-android-arm64
         path: rustdesk/artifacts/*
         retention-days: 14
+    if: ${{ contains(github.event.head_commit.message, '[android-only]') || github.event_name == 'workflow_dispatch' }}
+  android-e2e:
+    name: Android native launch and own-server test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: rustdesk
+    steps:
+    - name: Branding source
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Exact upstream source
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+        submodules: recursive
+        path: rustdesk
+        persist-credentials: false
+    - name: Restore bridge from pinned original build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "for i in $(seq 1 80); do\n  if gh run download 42887318323 --repo errazikarakas/ChatGpt --name bridge-artifact --dir .; then break; fi\n  sleep 15\ndone\ntest -f flutter/lib/generated_bridge.dart"
+    - name: Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Python for verified dependency and icon preparation
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
+    - name: Android platform and build tools
+      run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+    - name: Flutter matching upstream mobile release
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: 3.24.5
+        channel: stable
+        cache: true
+    - name: Prepare exact official native engine and branded shell
+      run: 'python3 -m pip install Pillow
+
+        python3 ../ci/android_prepare_native.py --source . --output native-input --abi x86_64
+
+        python3 ../ci/apply_branding.py --source . --overlay ..
+
+        python3 ../ci/android_patch.py --source . --logo ../branding/logo.png --upstream-apk native-input/upstream-1.5.1-x86_64.apk --abi x86_64
+
+        '
+    - name: Upstream Flutter compatibility patch
+      run: 'git -C "$(dirname "$(dirname "$(command -v flutter)")")" apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+        flutter config --no-analytics
+
+        '
+    - name: Build actual x86_64 emulator test APK
+      run: 'cd flutter
+
+        flutter pub get
+
+        flutter build apk --debug --target-platform android-x64 --split-per-abi --dart-define=BAKIM_ANDROID_SMOKE=true
+
+        mkdir -p ../artifacts/android-e2e'
+    - name: Enable KVM for disposable Android emulator
+      run: 'echo ''KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+
+        sudo udevadm control --reload-rules
+
+        sudo udevadm trigger --name-match=kvm'
+    - name: Boot actual Android emulator and launch branded app
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: 35
+        arch: x86_64
+        target: google_apis
+        profile: pixel_6
+        disable-animations: true
+        emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        script: cd rustdesk && python3 ../ci/android_smoke.py --apk flutter/build/app/outputs/flutter-apk/app-x86_64-debug.apk --output artifacts/android-e2e --timeout 240
+    - name: Upload Android runtime proof
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-android-e2e
+        path: rustdesk/artifacts/android-e2e/*
+        retention-days: 14
+      if: always()
     if: ${{ contains(github.event.head_commit.message, '[android-only]') || github.event_name == 'workflow_dispatch' }}

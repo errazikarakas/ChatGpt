@@ -10,12 +10,15 @@ OPTIONS={
  'custom-rendezvous-server':'xn--bakm-nza.tr:21116',
  'relay-server':'xn--bakm-nza.tr:21117',
  'key':'v15Oj1NdzRE32xyZRKLlk2sfrP8AOLxx5ZxEV3JqYvM=',
- 'access-mode':'custom','approve-mode':'password-click',
+ 'access-mode':'custom','approve-mode':'click',
  'enable-keyboard':'Y','enable-clipboard':'Y','enable-file-transfer':'N',
  'enable-audio':'N','enable-camera':'N','enable-terminal':'N',
  'enable-tunnel':'N','enable-remote-printer':'N',
 }
-UPSTREAM_SHA256='cfc44193ef96dd601d25c9a29f1aa5385effdbaae33d2abbb1d88495797f6b84'
+UPSTREAM_SHA256={
+ 'arm64-v8a':'cfc44193ef96dd601d25c9a29f1aa5385effdbaae33d2abbb1d88495797f6b84',
+ 'x86_64':'75977356cee4a2dd0c1dd8e93d09ea7f712aa4ef25f190fdad27b9e9200dbb33',
+}
 
 def replace_one(path:Path,old:str,new:str):
     text=path.read_text()
@@ -23,10 +26,10 @@ def replace_one(path:Path,old:str,new:str):
     path.write_text(text.replace(old,new,1))
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--source',type=Path,required=True);ap.add_argument('--logo',type=Path,required=True);ap.add_argument('--upstream-apk',type=Path,required=True);a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--source',type=Path,required=True);ap.add_argument('--logo',type=Path,required=True);ap.add_argument('--upstream-apk',type=Path,required=True);ap.add_argument('--abi',choices=UPSTREAM_SHA256,default='arm64-v8a');a=ap.parse_args()
     root=a.source; flutter=root/'flutter'; android=flutter/'android'; app=android/'app'
     apk_hash=hashlib.sha256(a.upstream_apk.read_bytes()).hexdigest()
-    if apk_hash!=UPSTREAM_SHA256:raise RuntimeError('Official 1.5.1 arm64 native APK digest mismatch')
+    if apk_hash!=UPSTREAM_SHA256[a.abi]:raise RuntimeError('Official 1.5.1 native APK digest mismatch for selected ABI')
     gradle=app/'build.gradle'
     replace_one(gradle,'applicationId "com.carriez.flutter_hbb"','applicationId "tr.bakim.yardim"')
     # No Rust build is performed: Maven AAR is the exact Cargo.lock-pinned package.
@@ -45,6 +48,13 @@ def main():
     # The reused upstream native core deliberately retains its JNI package/classes.
     # Its visible app-name comes through Flutter; do not change native package names.
     common=flutter/'lib/common.dart';replace_one(common,"String get appName {\n", "String get appName {\n  if (isAndroid) return 'Bakım.TR Yardım';\n")
+    home=flutter/'lib/mobile/pages/home_page.dart';home.write_text(home.read_text().replace('bind.mainGetAppNameSync()', 'appName'))
+    main_dart=flutter/'lib/main.dart';main_dart.write_text(main_dart.read_text().replace(': bind.mainGetAppNameSync(),', ': appName,'))
+    # The upstream Android service flow asks for a file-workspace/log folder
+    # even before screen sharing. Skip that optional setup when file transfer
+    # is disabled, keeping this support build free of unrelated folder prompts.
+    server_model=flutter/'lib/models/server_model.dart'
+    replace_one(server_model, '      if (isAndroid) {\n        try {\n          await AndroidDocuments.requireLogFolder();', '      if (isAndroid && bind.mainGetOptionSync(key: kOptionEnableFileTransfer) != \'N\') {\n        try {\n          await AndroidDocuments.requireLogFolder();')
     # Pre-seed BEFORE native mainInit invokes any rendezvous tests on the first launch.
     # Public server address/key only; no shared/embedded unattended access password.
     toml='[options]\n'+''.join(json.dumps(k)+' = '+json.dumps(v)+'\n' for k,v in OPTIONS.items())
@@ -57,6 +67,29 @@ def main():
       }
 """%json.dumps(toml,ensure_ascii=False)
     replace_one(native,'      _ffiBind = RustdeskImpl(dylib);',seed+'      _ffiBind = RustdeskImpl(dylib);')
+    # CI-only read-only diagnostics. The production APK has this flag off and
+    # tree-shakes this block; no temporary password/private key enters the proof.
+    native.write_text(native.read_text().replace("import 'dart:convert';", "import 'dart:async';\nimport 'dart:convert';",1))
+    diag="""      if (isAndroid && const bool.fromEnvironment('BAKIM_ANDROID_SMOKE')) {
+        Timer.periodic(const Duration(seconds: 2), (timer) async {
+          try {
+            final status = jsonDecode(await _ffiBind.mainGetConnectStatus());
+            final proof = <String, dynamic>{
+              'marker': 'bakim-android-smoke-v1',
+              'appName': 'Bakım.TR Yardım',
+              'id': await _ffiBind.mainGetMyId(),
+              'connectStatus': status,
+              'options': <String, String>{
+                for (final key in <String>['custom-rendezvous-server', 'relay-server', 'key', 'enable-keyboard', 'enable-clipboard', 'enable-file-transfer', 'enable-audio', 'enable-camera', 'enable-terminal', 'enable-tunnel', 'enable-remote-printer'])
+                  key: _ffiBind.mainGetOptionSync(key: key),
+              },
+            };
+            await File('$_dir/bakim-smoke.json').writeAsString(jsonEncode(proof), flush: true);
+          } catch (_) { /* Retry on the next heartbeat while native startup completes. */ }
+        });
+      }
+"""
+    replace_one(native,"        customClientConfig: '',\n      );", "        customClientConfig: '',\n      );\n"+diag)
     # Optional microphone/file modules are denied by presets; native Android permission
     # flows are retained unchanged so screen capture and accessibility stay OS-approved.
     image=Image.open(a.logo).convert('RGBA');bbox=image.getbbox();image=image.crop(bbox) if bbox else image
@@ -67,8 +100,8 @@ def main():
         size=int(px*108/48);foreground=Image.new('RGBA',(size,size));n=int(size*0.66);foreground.alpha_composite(image.resize((n,n),Image.Resampling.LANCZOS),((size-n)//2,(size-n)//2));foreground.save(out/'ic_launcher_foreground.png')
     with zipfile.ZipFile(a.upstream_apk) as z:
         for name in ['librustdesk.so','libc++_shared.so']:
-            data=z.read('lib/arm64-v8a/'+name);out=app/'src/main/jniLibs/arm64-v8a'/name;out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data)
-    report={'appName':APP_NAME,'applicationId':'tr.bakim.yardim','upstreamTag':'1.5.1','upstreamApkSha256':apk_hash,'nativeCoreReused':True,'nativeCoreRecompiled':False,'firstRunServerPreset':True,'presets':OPTIONS,'requiredOsApprovals':['Android package installation','MediaProjection screen capture','Accessibility input control when needed']}
+            data=z.read('lib/'+a.abi+'/'+name);out=app/'src/main/jniLibs'/a.abi/name;out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data)
+    report={'appName':APP_NAME,'applicationId':'tr.bakim.yardim','abi':a.abi,'upstreamTag':'1.5.1','upstreamApkSha256':apk_hash,'nativeCoreReused':True,'nativeCoreRecompiled':False,'firstRunServerPreset':True,'presets':OPTIONS,'requiredOsApprovals':['Android package installation','MediaProjection screen capture','Accessibility input control when needed']}
     (root/'bakim-android-build-manifest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
     print('Android overlay applied: label, icon, isolated application ID, first-run server presets and exact upstream native core')
 

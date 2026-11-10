@@ -11,7 +11,7 @@ permissions:
   actions: read
 concurrency:
   group: bakim-yardim-android-updater
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   android:
     name: Android updater ${{ matrix.abi }}

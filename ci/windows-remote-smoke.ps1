@@ -24,6 +24,30 @@ public class BakimWindows {
  [DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")]public static extern void mouse_event(uint f,uint x,uint y,uint data,UIntPtr extra);
  public struct Rect {public int Left,Top,Right,Bottom;}
+ [StructLayout(LayoutKind.Sequential)]public struct KeyboardInput {public ushort wVk,wScan;public uint dwFlags,time;public UIntPtr dwExtraInfo;}
+ [StructLayout(LayoutKind.Sequential)]public struct MouseInput {public int dx,dy;public uint mouseData,dwFlags,time;public UIntPtr dwExtraInfo;}
+ [StructLayout(LayoutKind.Explicit)]public struct InputUnion {[FieldOffset(0)]public KeyboardInput ki;[FieldOffset(0)]public MouseInput mi;}
+ [StructLayout(LayoutKind.Sequential)]public struct Input {public uint type;public InputUnion u;}
+ [DllImport("user32.dll",SetLastError=true)]public static extern uint SendInput(uint count,Input[] inputs,int size);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern uint MapVirtualKeyW(uint code,uint mapType);
+ public static void ScanKey(uint vk,bool up) {
+  var input=new Input();input.type=1;input.u.ki.wScan=(ushort)MapVirtualKeyW(vk,0);input.u.ki.dwFlags=8u|(up?2u:0u);
+  if(SendInput(1,new Input[]{input},Marshal.SizeOf(typeof(Input)))!=1)throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+  System.Threading.Thread.Sleep(35);
+ }
+ public static void TypeMarker(string marker) {
+  bool shift=false;
+  foreach(char c in marker){
+   bool letter=c>='A'&&c<='Z';
+   if(letter!=shift){ScanKey(0xA0,!letter);shift=letter;}
+   uint vk=letter?(uint)c:(c=='-'?0xBDu:0u);
+   if(vk==0)throw new ArgumentException("Unsupported isolated marker character");
+   ScanKey(vk,false);ScanKey(vk,true);
+  }
+  if(shift)ScanKey(0xA0,true);
+  ScanKey(0x0D,false);ScanKey(0x0D,true);
+ }
+
  public static IntPtr RemoteWindow(){IntPtr result=IntPtr.Zero;EnumWindows((h,p)=>{var t=new StringBuilder(512);GetWindowText(h,t,t.Capacity);var s=t.ToString();if(IsWindowVisible(h)&&(s.Contains("Remote Desktop")||s.Contains("Uzak Masaüstü")))result=h;return true;},IntPtr.Zero);return result;}
 }
 '@
@@ -109,7 +133,7 @@ if(-not [BakimWindows]::GetWindowRect($remote,[ref]$r)){throw 'Remote window bou
 [BakimWindows]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
 [BakimWindows]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
 Start-Sleep 1
-[System.Windows.Forms.SendKeys]::SendWait('BAKIMTR-CI-REMOTE-CONTROL-VERIFIED{ENTER}')
+[BakimWindows]::TypeMarker('BAKIMTR-CI-REMOTE-CONTROL-VERIFIED')
 Start-Sleep 5
 $width=[Math]::Max(1,$r.Right-$r.Left);$height=[Math]::Max(1,$r.Bottom-$r.Top)
 $bitmap=New-Object System.Drawing.Bitmap($width,$height)
@@ -123,4 +147,4 @@ for($i=0;$i -lt 45;$i++){
  Start-Sleep 2
 }
 if(-not $markerVerified){throw 'Independent target file did not confirm the remote keyboard marker'}
-@{remoteWindowStarted=$true;fixtureIdMatched=$true;keyboardMarkerSent=$true;targetIsIsolatedFixture=$true;source='GitHub-hosted Windows runner';connectionEntryMethod=$entryMethod;usesNormalGuiConnectionFlow=$true;independentTargetMarkerVerified=$markerVerified;remoteKeyboardControlVerified=$true} | ConvertTo-Json | Set-Content (Join-Path $out 'remote-smoke.json') -Encoding UTF8
+@{remoteWindowStarted=$true;fixtureIdMatched=$true;keyboardMarkerSent=$true;targetIsIsolatedFixture=$true;source='GitHub-hosted Windows runner';connectionEntryMethod=$entryMethod;usesNormalGuiConnectionFlow=$true;independentTargetMarkerVerified=$markerVerified;remoteKeyboardControlVerified=$true;keyboardInjectionMethod='Win32 SendInput KEYEVENTF_SCANCODE'} | ConvertTo-Json | Set-Content (Join-Path $out 'remote-smoke.json') -Encoding UTF8

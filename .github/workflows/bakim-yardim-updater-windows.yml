@@ -10,7 +10,7 @@ permissions:
   contents: read
 concurrency:
   group: bakim-yardim-windows-updater
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   windows-updater:
     runs-on: windows-2022

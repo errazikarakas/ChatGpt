@@ -30,9 +30,58 @@ function Save-State($State) {
   [IO.File]::WriteAllText($tempState, ($State | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
   Move-Item -LiteralPath $tempState -Destination $stateFile -Force
 }
+function Quote-ProcessArgument([string]$Value) {
+  # CommandLineToArgvW-compatible quoting. No shell or expression evaluation.
+  return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+function Invoke-BoundedProcess([string]$Executable, [string[]]$Arguments, [string]$Step, [string]$Leaf) {
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $nonce = [Guid]::NewGuid().ToString('N')
+  $stdout = Join-Path $labRoot ($nonce + '.stdout')
+  $stderr = Join-Path $labRoot ($nonce + '.stderr')
+  $process = $null
+  $timedOut = $false
+  Write-Proof @{ action=$Action; step=$Step; phase='before'; fileName=$Leaf; timeoutSeconds=30 }
+  try {
+    $commandLine = ($Arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join ' '
+    $process = Start-Process -FilePath $Executable -ArgumentList $commandLine -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
+    $null = $process.Handle
+    if (-not $process.WaitForExit(30000)) {
+      $timedOut = $true
+      # Kill only the exact process handle created by this invocation.
+      try { $process.Kill(); $null = $process.WaitForExit(5000) } catch {}
+      throw ('Disposable laboratory deadline exceeded at ' + $Step)
+    }
+    $process.Refresh()
+    $exit = $process.ExitCode
+    if ($exit -ne 0) {
+      $detail = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Raw).Trim() } else { '' }
+      if ($detail.Length -gt 1500) { $detail = $detail.Substring(0,1500) }
+      throw ('Disposable laboratory call failed at ' + $Step + ', exit=' + $exit + ': ' + $detail)
+    }
+  } finally {
+    $watch.Stop()
+    Write-Proof @{ action=$Action; step=$Step; phase='after'; fileName=$Leaf; elapsedMilliseconds=$watch.ElapsedMilliseconds; timeout=$timedOut }
+    if ($null -ne $process) { $process.Dispose() }
+    Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+  }
+}
+function Invoke-BoundedPowerShell([string]$Step, [hashtable]$InputData, [string]$Code, [string]$Leaf) {
+  $resultPath = Join-Path $labRoot ([Guid]::NewGuid().ToString('N') + '.result.json')
+  $InputData.resultPath = $resultPath
+  $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($InputData | ConvertTo-Json -Compress)))
+  $worker = '$ErrorActionPreference="Stop"; try { $data=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $encodedData + '")) | ConvertFrom-Json); $result = & { ' + $Code + ' }; [IO.File]::WriteAllText($data.resultPath,($result | ConvertTo-Json -Compress -Depth 6),[Text.Encoding]::UTF8); exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
+  $encodedWorker = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($worker))
+  try {
+    Invoke-BoundedProcess -Executable (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Arguments @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedWorker) -Step $Step -Leaf $Leaf
+    if (-not (Test-Path -LiteralPath $resultPath)) { throw ('Laboratory worker returned no result: ' + $Step) }
+    return (Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json)
+  } finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }
+}
 function Invoke-SignTool([string[]]$Arguments) {
-  $lines = & $script:state.signTool @Arguments 2>&1
-  if ($LASTEXITCODE -ne 0) { throw ('SignTool failed (' + ($Arguments -join ' ') + '): ' + ($lines -join ' ')) }
+  $step = 'SignTool-' + $Arguments[0]
+  $leaf = [IO.Path]::GetFileName($Arguments[$Arguments.Length-1])
+  Invoke-BoundedProcess -Executable $script:state.signTool -Arguments $Arguments -Step $step -Leaf $leaf
 }
 function Get-OwnedCertificate {
   $certificate = Get-Item -LiteralPath ('Cert:\CurrentUser\My\' + $script:state.thumbprint)
@@ -46,9 +95,9 @@ function Get-MotwDigest([string]$Path) {
   try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path + ':Zone.Identifier')))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
 }
 function Assert-Signature([string]$Path) {
-  $signature = Get-AuthenticodeSignature -LiteralPath $Path
-  if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $script:state.thumbprint) {
-    throw ('Catalog trust preflight failed: status=' + $signature.Status + ', file=' + [IO.Path]::GetFileName($Path))
+  $signature = Invoke-BoundedPowerShell -Step 'Get-AuthenticodeSignature' -InputData @{ path=$Path } -Leaf ([IO.Path]::GetFileName($Path)) -Code '$s=Get-AuthenticodeSignature -LiteralPath $data.path; [PSCustomObject]@{ status=[string]$s.Status; signerThumbprint=if($null -eq $s.SignerCertificate){""}else{$s.SignerCertificate.Thumbprint} }'
+  if ($signature.status -ne 'Valid' -or $signature.signerThumbprint -ne $script:state.thumbprint) {
+    throw ('Catalog trust preflight failed: status=' + $signature.status + ', file=' + [IO.Path]::GetFileName($Path))
   }
   return $signature
 }
@@ -63,16 +112,17 @@ try {
     if ($null -eq $signTool) { throw 'Windows SDK x64 signtool.exe unavailable.' }
     $nonce = [Guid]::NewGuid().ToString('N')
     $subject = 'CN=Bakim CI disposable ' + $env:GITHUB_RUN_ID + ' ' + $nonce
-    $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddHours(4)
-    $script:state = [PSCustomObject]@{ version=1; runId=$env:GITHUB_RUN_ID; nonce=$nonce; subject=$subject; thumbprint=$certificate.Thumbprint; signTool=$signTool.FullName; catalogs=@() }
+    $identity = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Disposable CI LocalMachine public trust requires an administrator runner.' }
+    $created = Invoke-BoundedPowerShell -Step 'New-SelfSignedCertificate' -InputData @{subject=$subject} -Leaf 'CurrentUser-My' -Code '$c=New-SelfSignedCertificate -Type CodeSigningCert -Subject $data.subject -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddHours(4); [PSCustomObject]@{ thumbprint=$c.Thumbprint }'
+    $certificate = Get-Item -LiteralPath ('Cert:\CurrentUser\My\' + $created.thumbprint)
+    $script:state = [PSCustomObject]@{ version=1; runId=$env:GITHUB_RUN_ID; nonce=$nonce; subject=$subject; thumbprint=$certificate.Thumbprint; signTool=$signTool.FullName; trustLocation='LocalMachine'; catalogs=@() }
     # Record the owned key before adding public trust, so cleanup is possible after a partial failure.
     Save-State $script:state
-    $publicCertificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2(,$certificate.RawData)
     foreach ($storeName in @('Root','TrustedPublisher')) {
-      $store = New-Object Security.Cryptography.X509Certificates.X509Store($storeName, 'CurrentUser')
-      try { $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite); $store.Add($publicCertificate) } finally { $store.Close() }
+      $null = Invoke-BoundedPowerShell -Step ('PublicTrust-Add-' + $storeName) -InputData @{ thumbprint=$script:state.thumbprint; subject=$script:state.subject; location='LocalMachine'; store=$storeName } -Leaf ('LocalMachine-' + $storeName) -Code '$c=Get-Item -LiteralPath ("Cert:\CurrentUser\My\"+$data.thumbprint); if($c.Subject -ne $data.subject){throw "Certificate ownership mismatch"}; $public=[Security.Cryptography.X509Certificates.X509Certificate2]::new($c.RawData); $s=[Security.Cryptography.X509Certificates.X509Store]::new($data.store,$data.location); try{$s.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite); $s.Add($public)}finally{$s.Close()}; [PSCustomObject]@{added=$true}'
     }
-    Write-Proof @{ action='Initialize'; thumbprint=$certificate.Thumbprint; keyExported=$false; certificateHours=4 }
+    Write-Proof @{ action='Initialize'; thumbprint=$certificate.Thumbprint; keyExported=$false; certificateHours=4; publicTrustScope='LocalMachine-Root-TrustedPublisher'; privateKeyScope='CurrentUser-My' }
     Write-Output 'Disposable publisher laboratory initialized; no executable bytes or Windows policy changed.'
   } else {
     if (-not (Test-Path -LiteralPath $stateFile)) {
@@ -80,6 +130,8 @@ try {
       throw 'Initialize disposable publisher laboratory first.'
     }
     $script:state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+    $trustLocation = if ($null -ne $script:state.PSObject.Properties['trustLocation']) { [string]$script:state.trustLocation } else { 'CurrentUser' }
+    if ($trustLocation -notin @('CurrentUser','LocalMachine')) { throw 'Invalid owned public trust store location.' }
     if ($script:state.version -ne 1 -or $script:state.runId -ne $env:GITHUB_RUN_ID -or $script:state.nonce -notmatch '^[a-f0-9]{32}$' -or $script:state.thumbprint -notmatch '^[A-Fa-f0-9]{40}$' -or $script:state.subject -ne ('CN=Bakim CI disposable ' + $env:GITHUB_RUN_ID + ' ' + $script:state.nonce)) { throw 'Laboratory state ownership mismatch.' }
     if ($Action -eq 'Add') {
       if ([string]::IsNullOrWhiteSpace($File)) { throw '-File is required for Add.' }
@@ -103,13 +155,14 @@ try {
         $record = [PSCustomObject]@{ name=$name; path=$catalogPath; fileSha256=$before; registered=$false }
         $script:state.catalogs = @($script:state.catalogs) + $record
         Save-State $script:state
-        $null = New-FileCatalog -Path $path -CatalogFilePath $catalogPath -CatalogVersion 2
+        $null = Invoke-BoundedPowerShell -Step 'New-FileCatalog' -InputData @{path=$path; catalog=$catalogPath} -Leaf $item.Name -Code '$null=New-FileCatalog -Path $data.path -CatalogFilePath $data.catalog -CatalogVersion 2; [PSCustomObject]@{created=$true}'
         Invoke-SignTool -Arguments @('sign','/fd','SHA256','/sha1',$script:state.thumbprint,'/s','My',$catalogPath)
         Invoke-SignTool -Arguments @('verify','/pa',$catalogPath)
         # The nonce+GUID catalog name is already unique. Do not rename it: cleanup removes exactly this owned entry.
-        Invoke-SignTool -Arguments @('catdb','/d',$catalogPath)
+        # Persist ownership before the bounded registration; a timeout may occur after the database write.
         $record.registered = $true
         Save-State $script:state
+        Invoke-SignTool -Arguments @('catdb','/d',$catalogPath)
       }
       $signature = Assert-Signature $path
       Invoke-SignTool -Arguments @('verify','/a','/pa',$path)
@@ -125,7 +178,8 @@ try {
         if ($entry.registered) { try { Invoke-SignTool -Arguments @('catdb','/d','/r',$entry.name) } catch { $cleanupErrors += $_.Exception.Message } }
       }
       foreach ($storeName in @('Root','TrustedPublisher','My')) {
-        $certificatePath = 'Cert:\CurrentUser\' + $storeName + '\' + $script:state.thumbprint
+        $location = if ($storeName -eq 'My') { 'CurrentUser' } else { $trustLocation }
+        $certificatePath = 'Cert:\' + $location + '\' + $storeName + '\' + $script:state.thumbprint
         $owned = Get-Item -LiteralPath $certificatePath -ErrorAction SilentlyContinue
         if ($null -ne $owned) {
           if ($owned.Subject -ne $script:state.subject) { throw 'Refusing non-owned certificate cleanup.' }

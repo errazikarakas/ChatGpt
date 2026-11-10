@@ -1,0 +1,112 @@
+name: Bakım.TR Yardım Android secure updater build
+'on':
+  push:
+    branches:
+    - bakim-yardim-build
+    paths:
+    - updater/android/**
+    - .github/workflows/bakim-yardim-updater-android.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: bakim-yardim-android-updater
+  cancel-in-progress: false
+jobs:
+  android:
+    name: Android updater ${{ matrix.abi }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: rustdesk
+    steps:
+    - name: Branding source
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Exact upstream source
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+        submodules: recursive
+        path: rustdesk
+        persist-credentials: false
+    - name: Restore bridge from pinned original build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "for i in $(seq 1 80); do\n  if gh run download 42887318323 --repo errazikarakas/ChatGpt --name bridge-artifact --dir .; then break; fi\n  sleep 15\ndone\ntest -f flutter/lib/generated_bridge.dart"
+    - name: Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Python for verified dependency and icon preparation
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
+    - name: Android platform and build tools
+      run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+    - name: Flutter matching upstream mobile release
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: 3.24.5
+        channel: stable
+        cache: true
+    - name: Prepare exact official native engine and branded shell
+      run: 'python3 -m pip install Pillow
+
+        python3 ../ci/android_prepare_native.py --source . --output native-input --abi ''${{ matrix.abi }}''
+
+        python3 ../ci/apply_branding.py --source . --overlay ..
+
+        python3 ../ci/android_patch.py --source . --logo ../branding/logo.png --upstream-apk native-input/upstream-1.5.1-${{ matrix.upstream }}.apk --abi ''${{ matrix.abi }}''
+
+        python3 ../updater/android/android_updater_patch.py --source . --assets ../updater/android --version-code 2026113002 --version-name 1.5.1-bakim.2'
+    - name: Upstream Flutter compatibility patch
+      run: "sdk=\"$(dirname \"$(dirname \"$(command -v flutter)\")\")\"\npatch=\"$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff\"\nif git -C \"$sdk\" apply --check\
+        \ \"$patch\"; then\n  git -C \"$sdk\" apply \"$patch\"\nelse\n  git -C \"$sdk\" apply --reverse --check \"$patch\"\nfi\nflutter config --no-analytics"
+    - name: Build branded self-updating Android application
+      run: 'cd flutter
+
+        flutter pub get
+
+        flutter build apk --${{ matrix.mode }} --target-platform ''${{ matrix.target }}'' --split-per-abi --build-name 1.5.1-bakim.2 --build-number 2026113002 ${{ matrix.flags }}
+
+        mkdir -p ../artifacts
+
+        cp build/app/outputs/flutter-apk/app-${{ matrix.abi }}-${{ matrix.mode }}.apk ../artifacts/Bakim-TR-Yardim-updater-${{ matrix.abi }}.apk
+
+        cp ../bakim-android-build-manifest.json ../artifacts/
+
+        sha256sum ../artifacts/*.apk > ../artifacts/SHA256SUMS-ci
+
+        cd android
+
+        ./gradlew --stop'
+    - name: Preserve exact APK for private production signing and repeated runtime tests
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-updater-android-${{ matrix.abi }}
+        path: rustdesk/artifacts/*
+        retention-days: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - abi: arm64-v8a
+          target: android-arm64
+          mode: release
+          upstream: aarch64
+          flags: ''
+        - abi: x86_64
+          target: android-x64
+          mode: debug
+          upstream: x86_64
+          flags: --dart-define=BAKIM_ANDROID_SMOKE=true --dart-define=BAKIM_UPDATER_TEST_FIXTURE_SHA256=f367ad807d60040392d54c5458fb7081360deeb99922e8caea5921c03cc9e37e

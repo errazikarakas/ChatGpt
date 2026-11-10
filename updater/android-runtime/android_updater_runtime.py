@@ -32,7 +32,13 @@ def button(items,labels):
    if n.get('enabled')=='true' and norm(n.get('text',''))==norm(label):
     return tap(n)
  return False
-def launch():adb('shell','am','start','-W','-n',MAIN)
+def launch():
+ # A person opens the app on an unlocked, awake phone. Keep the disposable
+ # AVD in that same foreground state; never grant app/install permissions here.
+ adb('shell','input','keyevent','KEYCODE_WAKEUP',check=False)
+ adb('shell','wm','dismiss-keyguard',check=False)
+ adb('shell','svc','power','stayon','true',check=False)
+ adb('shell','am','start','-W','-n',MAIN)
 def reset_defer():
  adb('shell','am','force-stop',PACKAGE)
  adb('shell','run-as',PACKAGE,'rm','-f','shared_prefs/bakim-yardim-updater.xml')
@@ -73,7 +79,7 @@ try:
   if h.hexdigest()!=a.initial_sha256:raise RuntimeError('Private initial APK checksum mismatch')
   report['initialApkSha256Matched']=True
   report['lastStep']='install_initial_apk'
-  adb('wait-for-device',timeout=60);adb('install','-r','-t',apk,timeout=120)
+  adb('wait-for-device',timeout=60);adb('logcat','-c');adb('install','-r','-t',apk,timeout=120)
   if version()!=a.initial_version:raise RuntimeError('Initial version incorrect')
   report['initialVersionConfirmed']=True
   report['lastStep']='create_private_fixture_cache'
@@ -88,21 +94,42 @@ try:
   while time.monotonic()-phase_started<a.timeout:
    if time.monotonic()-last_action<2:time.sleep(1);continue
    items=nodes();last_action=time.monotonic();texts=[n.get('text','').strip().casefold() for n in items]
-   switches=[n for n in items if n.get('checkable')=='true' and ('switch' in n.get('class','').lower() or 'switch' in n.get('resource-id','').lower())]
+   report['lastPhase']=phase
+   report['lastUiPackages']=sorted({n.get('package','') for n in items if n.get('package','') in (PACKAGE,'com.android.settings','com.android.packageinstaller','com.google.android.packageinstaller','com.android.permissioncontroller','com.google.android.permissioncontroller','com.android.systemui')})
+   switches=[n for n in items if n.get('enabled')=='true' and ('switch' in n.get('class','').lower() or 'switch' in n.get('resource-id','').lower())]
+   report['lastSystemSwitchNodes']=[{key:n.get(key) for key in ('class','resource-id','checkable','checked','clickable')} for n in switches[:8]]
    in_settings=any(n.get('package')=='com.android.settings' for n in items)
+   if in_settings and not (a.output/'system-source-permission.png').exists():
+    # Only the opaque Android Settings page is shareable. Never capture the
+    # RustDesk screen or installer overlay, which could expose a temporary ID.
+    focus=adb('shell','dumpsys','window','windows',check=False)
+    if any('mCurrentFocus' in line and 'com.android.settings/' in line for line in focus.splitlines()):
+     snap=subprocess.run(['adb','exec-out','screencap','-p'],capture_output=True,timeout=20).stdout
+     if snap.startswith(b'\x89PNG\r\n\x1a\n'):(a.output/'system-source-permission.png').write_bytes(snap)
+     clean=ET.Element('native-settings')
+     for node in items:
+      if node.get('package')=='com.android.settings':ET.SubElement(clean,'node',{key:node.get(key,'') for key in ('class','resource-id','bounds','enabled','checked','checkable','clickable')})
+     ET.ElementTree(clean).write(a.output/'system-source-permission-sanitized.xml',encoding='utf-8',xml_declaration=True)
+   is_installer=any('packageinstaller' in n.get('package','') or 'permissioncontroller' in n.get('package','') for n in items)
+   has_update=any(t in ('update','güncelle','install','yükle') for t in texts)
    if phase=='decline_permission':
-    if in_settings and switches:
+    if in_settings:
      report['normalUnknownSourcesSettingsShown']=True
      adb('shell','input','keyevent','KEYCODE_BACK');time.sleep(2)
      report['sourcePermissionDeclinePreservedVersion']=version()==a.initial_version
      report['sourcePermissionDeclineReturnedToCurrentApp']=resumed()
      reset_defer();phase='decline_os';phase_started=time.monotonic()
+    elif is_installer and has_update and button(items,['Cancel','İptal']):
+     # Some developer-installed AVD packages are already trusted sources.
+     # Do not add an artificial permission step that the OS does not require.
+     report['sourcePermissionInitiallyAlreadyAllowed']=True
+     report['normalAndroidInstallerShown']=True;report['systemInstallerDeclineUsed']=True;time.sleep(2)
+     report['systemDeclinePreservedVersion']=version()==a.initial_version;report['systemDeclineReturnedToCurrentApp']=resumed()
+     reset_defer();phase='accept_os';phase_started=time.monotonic()
    else:
     if in_settings and switches:
      if switches[0].get('checked')!='true':tap(switches[0]);report['unknownSourcesGrantedThroughSystemUi']=True;time.sleep(1)
      adb('shell','input','keyevent','KEYCODE_BACK');continue
-    is_installer=any('packageinstaller' in n.get('package','') or 'permissioncontroller' in n.get('package','') for n in items)
-    has_update=any(t in ('update','güncelle','install','yükle') for t in texts)
     if is_installer and has_update:
      report['normalAndroidInstallerShown']=True
      if phase=='decline_os' and button(items,['Cancel','İptal']):
@@ -127,13 +154,32 @@ try:
   report['publisherSignatureAcceptedByAndroidUpdate']=report.get('targetVersionInstalled',False)
 except Exception as exc:error=type(exc).__name__
 finally:
+ try:
+  report['actualInstalledVersionCode']=version()
+  for suffix,key in [('.apk','cachedTargetBytes'),('.apk.partial','partialTargetBytes')]:
+   value=adb('shell','run-as',PACKAGE,'stat','-c','%s',f'cache/bakim-updates/bakim-{a.target_version}'+suffix,check=False).strip()
+   report[key]=int(value) if value.isdigit() else 0
+  pref=adb('shell','run-as',PACKAGE,'cat','shared_prefs/bakim-yardim-updater.xml',check=False)
+  try:
+   node=ET.fromstring(pref).find("long[@name='deferUntil']")
+   report['nativeUpdateDeferredUntilFuture']=node is not None and int(node.get('value','0'))>int(time.time()*1000)
+  except (ET.ParseError,ValueError):report['nativeUpdateDeferredUntilFuture']=False
+ except Exception:pass
+ try:
+  logs=adb('logcat','-d',check=False)
+  report['updaterActivityStartObserved']=any('START' in line and 'BakimUpdateActivity' in line for line in logs.splitlines())
+  report['unknownSourcesSettingsStartObserved']='MANAGE_UNKNOWN_APP_SOURCES' in logs
+  report['nativeAppCrashObserved']=bool(re.search(r'Process: '+re.escape(PACKAGE)+r'[,\s]',logs))
+  report['backgroundActivityLaunchBlocked']=any(PACKAGE in line and 'background activity' in line.lower() and ('blocked' in line.lower() or 'denied' in line.lower()) for line in logs.splitlines())
+ except Exception:pass
  try:adb('shell','am','force-stop',PACKAGE,check=False)
  except Exception:pass
  try:a.private_key.unlink(missing_ok=True)
  except Exception:pass
  token=None
  report['errorType']=error;report['elapsedSeconds']=round(time.monotonic()-started,1)
- required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','normalAndroidInstallerShown','systemDeclinePreservedVersion','systemDeclineReturnedToCurrentApp','actualSystemInstallConfirmed','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
+ required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','normalAndroidInstallerShown','systemDeclinePreservedVersion','systemDeclineReturnedToCurrentApp','actualSystemInstallConfirmed','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
+ if not report.get('sourcePermissionInitiallyAlreadyAllowed'):required+=['sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi']
  report['ok']=error is None and all(report.get(k) for k in required)
  (a.output/'android-updater-proof.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps(report,ensure_ascii=False))

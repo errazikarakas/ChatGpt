@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bakim-android-updater-proof
-          path: artifacts/android-updater/*.json
+          path: artifacts/android-updater/*
           retention-days: 30
       - name: Remove the ephemeral runner private key
         if: always()

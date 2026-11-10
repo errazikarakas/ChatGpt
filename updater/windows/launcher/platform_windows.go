@@ -221,17 +221,26 @@ func withAttachment(path, source string, execute bool) error {
 		return result
 	}
 	defer method(2)
-	if err := hrError(method(3, uintptr(unsafe.Pointer(utf16(displayName))))); err != nil {
+	stringMethod := func(index uintptr, value string) error {
+		text := utf16(value)
+		err := hrError(method(index, uintptr(unsafe.Pointer(text))))
+		runtime.KeepAlive(text)
+		if err != nil {
+			return fmt.Errorf("Attachment method %d: %w", index, err)
+		}
+		return nil
+	}
+	if err := stringMethod(3, displayName); err != nil {
 		return err
 	}
 	if err := hrError(method(4, uintptr(unsafe.Pointer(&attachmentClient)))); err != nil {
 		return err
 	}
-	if err := hrError(method(5, uintptr(unsafe.Pointer(utf16(path))))); err != nil {
+	if err := stringMethod(5, path); err != nil {
 		return err
 	}
 	if source != "" {
-		if err := hrError(method(7, uintptr(unsafe.Pointer(utf16(source))))); err != nil {
+		if err := stringMethod(7, source); err != nil {
 			return err
 		}
 	}
@@ -246,7 +255,10 @@ func withAttachment(path, source string, execute bool) error {
 		}
 		return hrError(hr)
 	}
-	return hrError(method(11))
+	if err := hrError(method(11)); err != nil {
+		return fmt.Errorf("Attachment Save: %w", err)
+	}
+	return nil
 }
 func (p *windowsPlatform) Prepare(path, source string) error {
 	// Origin evidence is deliberately preserved, never cleared or downgraded.

@@ -1,0 +1,11 @@
+{
+  "appName": "Bakım.TR Yardım",
+  "version": "1.5.1",
+  "idServer": "xn--bakm-nza.tr:21116",
+  "relayServer": "xn--bakm-nza.tr:21117",
+  "publicKey": "v15Oj1NdzRE32xyZRKLlk2sfrP8AOLxx5ZxEV3JqYvM=",
+  "helpUrl": "https://xn--bakm-nza.tr/yardim.php",
+  "sourceUrl": "https://github.com/errazikarakas/ChatGpt/tree/bakim-yardim-build",
+  "logoUrl": "https://xn--bakm-nza.tr/assets/support/bakim-tr-yardim.png",
+  "logoSha256": "15376c8269a492373124b6ca38a9f7103f6d25e9f25afe3add1b0b67c7a7738e"
+}

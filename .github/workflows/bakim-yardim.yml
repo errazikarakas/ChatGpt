@@ -1,0 +1,328 @@
+name: Bakım.TR Yardım build
+'on':
+  push:
+    branches:
+    - bakim-yardim-build
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: bakim-yardim-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  SCITER_RUST_VERSION: '1.75'
+  RUST_VERSION: '1.75'
+  LLVM_VERSION: 15.0.6
+  FLUTTER_VERSION: 3.24.5
+  VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+  VCPKG_COMMIT_ID: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  VCPKG_CMAKE_VERSION: 4.3.0
+  VERSION: 1.5.1
+jobs:
+  network:
+    name: External server protocol test
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Probe real TCP, UDP and bidirectional relay
+      run: python3 ci/network_probe.py --host xn--bakm-nza.tr --key v15Oj1NdzRE32xyZRKLlk2sfrP8AOLxx5ZxEV3JqYvM= --output network-proof.json
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: external-network-proof
+        path: network-proof.json
+        retention-days: 30
+  bridge:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout Bakım.TR branding
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Checkout pinned RustDesk source
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+        submodules: recursive
+        path: rustdesk
+        persist-credentials: false
+    - name: Install prerequisites
+      run: "sudo apt-get install ca-certificates -y\nsudo apt-get update -y\nsudo apt-get install -y \\\n  clang \\\n  cmake \\\n  curl \\\n  gcc \\\n  git \\\n  g++ \\\n  libclang-dev \\\n  libgtk-3-dev\
+        \ \\\n  llvm-dev \\\n  nasm \\\n  ninja-build \\\n  pkg-config \\\n  wget\n"
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        targets: x86_64-unknown-linux-gnu
+        components: rustfmt
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      with:
+        prefix-key: bridge-ubuntu-22.04
+        workspaces: rustdesk -> target
+    - name: Cache Bridge
+      id: cache-bridge
+      uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c
+      with:
+        path: /tmp/flutter_rust_bridge
+        key: bridge-3.22.3
+    - name: Install flutter
+      uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        channel: stable
+        flutter-version: 3.22.3
+        cache: true
+    - name: Install flutter rust bridge deps
+      shell: bash
+      run: "cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked\ncargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features \"uuid\"\
+        \ --locked\nif [[ \"3.22.3\" == \"3.22.3\" ]]; then\n  # Default Flutter 3.22.3: extended_text 14 needs a newer Dart, so downgrade for resolution.\n  sed -i -e 's/extended_text: 14.0.0/extended_text:\
+        \ 13.0.0/g' flutter/pubspec.yaml\nelse\n  # Flutter 3.44 bridge for Windows arm64: match that build's source/pubspec state so the\n  # generated *.freezed.dart compiles against the same Flutter/freezed\
+        \ it resolves.\n  bash .github/patches/apply_flutter_3.44_source_patches.sh\nfi\npushd flutter && flutter pub get && popd\n"
+    - name: Run flutter rust bridge
+      run: '~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+
+        cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+        '
+    - name: Upload Artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: bridge-artifact
+        path: 'rustdesk/src/bridge_generated.rs
+
+          rustdesk/src/bridge_generated.io.rs
+
+          rustdesk/flutter/lib/generated_bridge.dart
+
+          rustdesk/flutter/lib/generated_bridge.freezed.dart
+
+          rustdesk/flutter/macos/Runner/bridge_generated.h
+
+          rustdesk/flutter/ios/Runner/bridge_generated.h'
+    env:
+      CARGO_EXPAND_VERSION: 1.0.95
+      FLUTTER_RUST_BRIDGE_VERSION: 1.80.1
+      RUST_VERSION: '1.75'
+    defaults:
+      run:
+        working-directory: rustdesk
+  windows:
+    name: Windows portable x64
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: rustdesk
+    steps:
+    - name: Checkout Bakım.TR branding
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Checkout pinned RustDesk source
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+        submodules: recursive
+        path: rustdesk
+        persist-credentials: false
+    - name: Export GitHub Actions cache environment variables
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
+      with:
+        script: 'core.exportVariable(''ACTIONS_CACHE_URL'', process.env.ACTIONS_CACHE_URL || '''');
+
+          core.exportVariable(''ACTIONS_RUNTIME_TOKEN'', process.env.ACTIONS_RUNTIME_TOKEN || '''');
+
+          '
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
+      with:
+        version: ${{ env.LLVM_VERSION }}
+    - name: Install flutter
+      id: flutter
+      uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
+      with:
+        channel: stable
+        flutter-version: 3.24.5
+        architecture: x64
+    - name: Replace engine with rustdesk custom flutter engine
+      run: 'flutter doctor -v
+
+        flutter precache --windows
+
+        Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+
+        Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+
+        mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+        '
+    - name: Patch flutter
+      shell: bash
+      run: "cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))\ncd $(dirname $(dirname $(which flutter)))\nif [[ \"3.24.5\" == ${{env.FLUTTER_VERSION}}\
+        \ ]]; then\n  git apply flutter_3.24.4_dropdown_menu_enableFilter.diff\nfi\n"
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      with:
+        toolchain: ${{ env.SCITER_RUST_VERSION }}
+        targets: x86_64-pc-windows-msvc
+        components: rustfmt
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      with:
+        prefix-key: windows-2022
+        workspaces: rustdesk -> target
+    - name: Setup vcpkg with Github Actions binary cache
+      uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+      with:
+        vcpkgDirectory: C:\vcpkg
+        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+        doNotCache: false
+    - name: Install vcpkg dependencies
+      env:
+        VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+      run: "if ! $VCPKG_ROOT/vcpkg \\\n  install \\\n  --triplet x64-windows-static \\\n  --x-install-root=\"$VCPKG_ROOT/installed\"; then\n  find \"${VCPKG_ROOT}/\" -name \"*.log\" | while read -r _1;\
+        \ do\n    echo \"$_1:\"\n    echo \"======\"\n    cat \"$_1\"\n    echo \"======\"\n    echo \"\"\n  done\n  exit 1\nfi\nhead -n 100 \"${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-windows-static-rel-out.log\"\
+        \ || true\n"
+      shell: bash
+    - name: Restore generated bridge
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "for ($i=0; $i -lt 60; $i++) {\n  gh run download ${{ github.run_id }} --repo ${{ github.repository }} --name bridge-artifact --dir .\n  if ($LASTEXITCODE -eq 0) { break }\n  Start-Sleep 15\n\
+        }\nif (-not (Test-Path 'flutter/lib/generated_bridge.dart')) { throw 'Bridge artifact not available' }"
+    - name: Apply Bakım.TR brand and fixed server policy
+      run: 'python -m pip install pillow
+
+        python ../ci/apply_branding.py --source . --overlay .. --native'
+    - name: Build branded client from source
+      run: 'python build.py --portable --flutter --skip-portable-pack --hwcodec
+
+        if ($LASTEXITCODE -ne 0) { throw "RustDesk source build failed" }
+
+        Move-Item ./flutter/build/windows/x64/runner/Release ./rustdesk
+
+        Copy-Item ../branding/client-public.json ./rustdesk/client-public.json
+
+        Copy-Item ./branding/NOTICE.txt ./rustdesk/NOTICE.txt
+
+        Copy-Item ./LICENCE ./rustdesk/AGPL-3.0.txt'
+    - name: Build portable single executable
+      shell: bash
+      run: 'sed -i "/dpiAware/d" res/manifest.xml
+
+        cd libs/portable
+
+        python -m pip install -r requirements.txt
+
+        python generate.py -f ../../rustdesk -o . -e ../../rustdesk/rustdesk.exe
+
+        cd ../..
+
+        mkdir -p out
+
+        cp target/release/rustdesk-portable-packer.exe out/Bakim-TR-Yardim.exe
+
+        cp ../branding/client-public.json out/client-public.json
+
+        cp branding/NOTICE.txt out/NOTICE.txt
+
+        cp LICENCE out/AGPL-3.0.txt
+
+        sha256sum out/Bakim-TR-Yardim.exe > out/SHA256SUMS'
+    - name: Smoke-test app and external server
+      run: powershell -ExecutionPolicy Bypass -File ../ci/windows-smoke.ps1 -Executable out/Bakim-TR-Yardim.exe -OutputDirectory out/proof
+    - name: Upload Windows release and proof
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Bakim-TR-Yardim-Windows
+        path: rustdesk/out
+        if-no-files-found: error
+        retention-days: 30
+  android:
+    name: Bakım.TR Yardım Android arm64
+    needs:
+    - bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: rustdesk
+    steps:
+    - name: Branding source
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Exact upstream source
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+        submodules: recursive
+        path: rustdesk
+        persist-credentials: false
+    - name: Restore matching Flutter Rust bridge
+      uses: actions/download-artifact@v4
+      with:
+        name: bridge-artifact
+        path: rustdesk
+    - name: Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Python for verified dependency and icon preparation
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Android SDK
+      uses: android-actions/setup-android@v3
+    - name: Android platform and build tools
+      run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+    - name: Flutter matching upstream mobile release
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: 3.24.5
+        channel: stable
+        cache: true
+    - name: Prepare exact official native engine and branded shell
+      run: 'python3 -m pip install Pillow
+
+        python3 ../ci/android_prepare_native.py --source . --output native-input
+
+        python3 ../ci/apply_branding.py --source . --overlay ..
+
+        python3 ../ci/android_patch.py --source . --logo ../branding/bakim-tr-yardim-master.png --upstream-apk native-input/upstream-1.5.1-aarch64.apk
+
+        '
+    - name: Upstream Flutter compatibility patch
+      run: 'git -C "$(dirname "$(dirname "$(command -v flutter)")")" apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+        flutter config --no-analytics
+
+        '
+    - name: Build real Android application
+      run: 'cd flutter
+
+        flutter pub get
+
+        flutter build apk --release --target-platform android-arm64 --split-per-abi --build-name 1.5.1 --build-number 2026111001
+
+        mkdir -p ../artifacts
+
+        cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ../artifacts/Bakim-TR-Yardim-android-arm64-ci.apk
+
+        cp ../bakim-android-build-manifest.json ../artifacts/
+
+        sha256sum ../artifacts/*.apk > ../artifacts/SHA256SUMS-ci
+
+        '
+    - name: Upload APK for private release signing on Bakım.TR server
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-android-arm64
+        path: rustdesk/artifacts/*
+        retention-days: 14

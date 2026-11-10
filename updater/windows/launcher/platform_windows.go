@@ -56,9 +56,15 @@ func hrError(hr uintptr) error {
 	return nil
 }
 
-type windowsPlatform struct{ root string }
+type windowsPlatform struct {
+	root  string
+	Owner uintptr
+}
 
-func newWindowsPlatform(root string) *windowsPlatform { return &windowsPlatform{root: root} }
+func newWindowsPlatform(root string) *windowsPlatform {
+	h, _, _ := user.NewProc("GetDesktopWindow").Call()
+	return &windowsPlatform{root: root, Owner: h}
+}
 func (p *windowsPlatform) Lock(root string) (func(), bool, error) {
 	runtime.LockOSThread()
 	sum, _, _ := fileDigest(strings.NewReader(strings.ToLower(root)))
@@ -204,6 +210,39 @@ var attachmentClass = guid{0x4125dd96, 0xe03a, 0x4103, [8]byte{0x8f, 0x70, 0xe0,
 var attachmentIID = guid{0x73db1241, 0x1e85, 0x4581, [8]byte{0x8e, 0x4f, 0xa8, 0x1e, 0x1d, 0x0f, 0x8c, 0x57}}
 var attachmentClient = guid{0xa96776e2, 0x03af, 0x40b9, [8]byte{0x97, 0x8f, 0xb4, 0x6a, 0xcb, 0x7c, 0xaa, 0x96}}
 
+func processPath(pid int) string {
+	h, _, _ := openProcess.Call(0x1000, 0, uintptr(pid))
+	if h == 0 {
+		return ""
+	}
+	defer closeHandle.Call(h)
+	var path [32768]uint16
+	n := uint32(len(path))
+	ok, _, _ := queryImage.Call(h, 0, uintptr(unsafe.Pointer(&path[0])), uintptr(unsafe.Pointer(&n)))
+	if ok == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(path[:n])
+}
+func (p *windowsPlatform) ProcessMatches(pid int, path string) bool {
+	return pid > 0 && strings.EqualFold(filepath.Clean(processPath(pid)), filepath.Clean(path))
+}
+func (p *windowsPlatform) StopHelper(path string) {
+	root := strings.ToLower(filepath.Join(p.root, "launchers", "versions")) + string(os.PathSeparator)
+	if !strings.HasPrefix(strings.ToLower(filepath.Clean(path)), root) || !strings.EqualFold(filepath.Base(path), "launcher.exe") {
+		return
+	}
+	for pid, image := range processes() {
+		if strings.EqualFold(filepath.Clean(image), filepath.Clean(path)) {
+			h, _, _ := openProcess.Call(0x1001, 0, uintptr(pid))
+			if h != 0 {
+				kernel.NewProc("TerminateProcess").Call(h, 1)
+				closeHandle.Call(h)
+			}
+		}
+	}
+}
+
 func withAttachment(path, source string, execute bool) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -238,7 +277,7 @@ func withAttachment(path, source string, execute bool) error {
 		return err
 	}
 	if err := hrError(method(4, uintptr(unsafe.Pointer(&attachmentClient)))); err != nil {
-		return err
+		return fmt.Errorf("Attachment SetClientGuid: %w", err)
 	}
 	if err := stringMethod(5, path); err != nil {
 		return err
@@ -281,7 +320,43 @@ func (p *windowsPlatform) Prepare(path, source string) error {
 	}
 	return os.WriteFile(path+":Zone.Identifier", zone, 0600)
 }
-func (p *windowsPlatform) Launch(path string) error { return withAttachment(path, "", true) }
+
+type shellExecuteInfo struct {
+	Size, Mask                        uint32
+	Window                            uintptr
+	Verb, File, Parameters, Directory *uint16
+	Show                              int32
+	Instance, IDList                  uintptr
+	Class                             *uint16
+	ClassKey                          uintptr
+	HotKey                            uint32
+	Icon, Process                     uintptr
+}
+
+func (p *windowsPlatform) Launch(path string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitialize.Call(0, 2)
+	if err := hrError(hr); err != nil {
+		return fmt.Errorf("Shell COM initialization: %w", err)
+	}
+	defer coUninitialize.Call()
+	info := shellExecuteInfo{Mask: 0x40 | 0x100, Window: p.Owner, Verb: utf16("open"), File: utf16(path), Show: 1}
+	info.Size = uint32(unsafe.Sizeof(info))
+	// Primary documented ShellExecuteEx path. No NOZONECHECKS, no policy changes,
+	// and no retry through a different executor after Windows denies execution.
+	ok, _, err := syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteExW").Call(uintptr(unsafe.Pointer(&info)))
+	if info.Process != 0 {
+		closeHandle.Call(info.Process)
+	}
+	if ok == 0 {
+		if err == syscall.Errno(1223) || err == syscall.Errno(5) || err == syscall.Errno(577) || err == syscall.Errno(1260) || err == syscall.Errno(225) {
+			return errUserDeclined
+		}
+		return nativeError("Windows ShellExecuteEx", err)
+	}
+	return nil
+}
 func (p *windowsPlatform) Authenticode(path string, m Manifest) error {
 	if !m.AuthenticodeRequired {
 		return nil

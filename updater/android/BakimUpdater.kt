@@ -84,6 +84,7 @@ object BakimUpdater {
         return file
     }
     fun register(activity: MainActivity, engine: FlutterEngine) {
+        BakimUpdateReceiver.dismissNotification(activity)
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
         updaterChannel = channel
         channel.setMethodCallHandler { call, result ->

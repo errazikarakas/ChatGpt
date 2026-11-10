@@ -21,11 +21,11 @@ replace(app/'build.gradle','versionName flutterVersionName',f'versionName {json.
 dart=flutter/'lib/bakim';dart.mkdir(exist_ok=True)
 for name in ['bakim_android_updater.dart','bakim_update_feed.dart']:shutil.copyfile(assets/name,dart/name)
 kotlin=app/'src/main/kotlin/com/carriez/flutter_hbb'
-for name in ['BakimUpdater.kt','BakimUpdateActivity.kt']:shutil.copyfile(assets/name,kotlin/name)
+for name in ['BakimUpdater.kt','BakimUpdateActivity.kt','BakimUpdateReceiver.kt']:shutil.copyfile(assets/name,kotlin/name)
 replace(kotlin/'MainActivity.kt','        super.configureFlutterEngine(flutterEngine)','        super.configureFlutterEngine(flutterEngine)\n        BakimUpdater.register(this, flutterEngine)')
 manifest=app/'src/main/AndroidManifest.xml'
 replace(manifest,'    <uses-permission android:name="android.permission.INTERNET" />','    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />')
-replace(manifest,'        <activity\n            android:name=".PermissionRequestTransparentActivity"','        <activity\n            android:name=".BakimUpdateActivity"\n            android:exported="false"\n            android:launchMode="singleTop"\n            android:configChanges="orientation|screenSize|keyboardHidden"\n            android:theme="@android:style/Theme.Material.Light.NoActionBar" />\n\n        <activity\n            android:name=".PermissionRequestTransparentActivity"')
+replace(manifest,'        <activity\n            android:name=".PermissionRequestTransparentActivity"','        <receiver android:name=".BakimUpdateReceiver" android:exported="false" />\n\n        <activity\n            android:name=".BakimUpdateActivity"\n            android:exported="false"\n            android:launchMode="singleTop"\n            android:configChanges="orientation|screenSize|keyboardHidden"\n            android:theme="@android:style/Theme.Material.Light.NoActionBar" />\n\n        <activity\n            android:name=".PermissionRequestTransparentActivity"')
 main=flutter/'lib/main.dart'
 replace(main,"import 'dart:io';","import 'dart:io';\nimport 'bakim/bakim_android_updater.dart';")
 s=main.read_text();start=s.index('void runMobileApp() async {');anchor='  runApp(App());';pos=s.index(anchor,start)+len(anchor)

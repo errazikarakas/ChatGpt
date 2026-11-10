@@ -1,7 +1,6 @@
 package com.carriez.flutter_hbb
 
 import android.app.Activity
-import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageInstaller
@@ -22,6 +21,7 @@ class BakimUpdateActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var sessionId = -1
     @Volatile private var finishing = false
+    @Volatile private var updateVisible = false
     private val timeout = Runnable { continueCurrent(defer = true) }
     private val expectedVersion: Long get() = intent.getLongExtra("version", 0)
 
@@ -39,6 +39,8 @@ class BakimUpdateActivity : Activity() {
     }
     override fun onNewIntent(newIntent: Intent) { super.onNewIntent(newIntent); intent = newIntent; if (intent.hasExtra(PackageInstaller.EXTRA_STATUS)) handleStatus() }
     override fun onSaveInstanceState(out: Bundle) { out.putInt("sessionId", sessionId); super.onSaveInstanceState(out) }
+    override fun onResume() { super.onResume(); updateVisible = true }
+    override fun onPause() { updateVisible = false; super.onPause() }
     override fun onDestroy() { handler.removeCallbacks(timeout); super.onDestroy() }
 
     private fun prepare() {
@@ -72,18 +74,16 @@ class BakimUpdateActivity : Activity() {
                 sessionId = installer.createSession(params)
                 BakimUpdater.trace(this, "native_session_created")
                 if (finishing) { installer.abandonSession(sessionId); return@thread }
-                val callback = Intent(this, BakimUpdateActivity::class.java).apply {
+                // A status Activity is not reliable: Android intentionally sends
+                // install results without background-activity launch privileges.
+                // An explicit private receiver survives the package replacement
+                // and can persist the real result before trying normal UI resume.
+                val callback = Intent(this, BakimUpdateReceiver::class.java).apply {
                     action = "tr.bakim.yardim.UPDATE_RESULT"
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     putExtra("version", expectedVersion); putExtra("sessionId", sessionId)
                 }
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
-                val options = if (Build.VERSION.SDK_INT >= 35) ActivityOptions.makeBasic().apply {
-                    // Opt in to the documented callback Activity launch; the
-                    // installer still always requires explicit user approval.
-                    setPendingIntentCreatorBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                }.toBundle() else null
-                val pending = PendingIntent.getActivity(this, sessionId, callback, flags, options)
+                val pending = PendingIntent.getBroadcast(this, sessionId, callback, flags)
                 installer.openSession(sessionId).use { session ->
                     session.openWrite("base.apk", 0, file.length()).use { output -> file.inputStream().use { it.copyTo(output) }; session.fsync(output) }
                     if (finishing) { session.abandon(); return@thread }
@@ -91,6 +91,10 @@ class BakimUpdateActivity : Activity() {
                         session.abandon(); BakimUpdater.trace(this, "live_session_kept_current_app")
                         runOnUiThread { continueCurrent(defer = false) }; return@thread
                     }
+                    require(BakimUpdater.preferences(this).edit()
+                        .putInt("pendingSessionId", sessionId).putLong("pendingVersion", expectedVersion)
+                        .putLong("pendingCommitAt", System.currentTimeMillis())
+                        .putBoolean("pendingForeground", updateVisible).commit())
                     BakimUpdater.trace(this, "native_session_committing")
                     session.commit(pending.intentSender)
                 }

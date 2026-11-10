@@ -1,1 +1,7 @@
-{"initialSha256":"6cdb21a7394b706f37827ee7ffb668bf77545a2f47e1b49dd5a05c0c64a9a452","fixtureSha256":"f367ad807d60040392d54c5458fb7081360deeb99922e8caea5921c03cc9e37e","buildRunId":42919052400,"observeOnly":false,"attempt":"official-framework-self-update"}
+{
+  "initialSha256": "553c53f0ecb69af3ff1dd140430d42172b14b60ce51696ff102084c256462bfb",
+  "fixtureSha256": "f367ad807d60040392d54c5458fb7081360deeb99922e8caea5921c03cc9e37e",
+  "buildRunId": 42924089010,
+  "observeOnly": false,
+  "attempt": "private-receiver-final"
+}

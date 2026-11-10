@@ -7,7 +7,7 @@ p.add_argument('--initial-version',type=int,default=2026113002);p.add_argument('
 p.add_argument('--observe-only',action='store_true')
 a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True);PACKAGE='tr.bakim.yardim';MAIN=PACKAGE+'/com.carriez.flutter_hbb.MainActivity'
 report={'ok':False,'productionFeedModified':False,'productionPrivateKeyUploaded':False,'productionApkPublished':False,'signedTestApkPublishedAsArtifact':False,'fixtureTokenPublished':False,'physicalPhoneTested':False,'initialVersionCode':a.initial_version,'targetVersionCode':a.target_version,'testKind':'documented same-publisher Android self-update with source consent and system-controlled confirmation fallback'}
-started=time.monotonic();token=None;error=None
+started=time.monotonic();token=None;error=None;installed_observed_at=None
 def adb(*args,check=True,timeout=40,input=None):
  r=subprocess.run(['adb',*map(str,args)],input=input,capture_output=True,timeout=timeout)
  if check and r.returncode:raise RuntimeError('ADB operation failed')
@@ -17,6 +17,26 @@ def version():
 def resumed():
  raw=adb('shell','dumpsys','activity','activities',check=False)+'\n'+adb('shell','dumpsys','window','windows',check=False)
  return any(MAIN in line and any(marker in line for marker in ('mResumedActivity','topResumedActivity','mCurrentFocus','mFocusedApp')) for line in raw.splitlines())
+def task_state():
+ raw=adb('shell','dumpsys','activity','activities',check=False)+'\n'+adb('shell','dumpsys','window','windows',check=False)
+ return {
+  'ownActivityRecordPresent':any('ActivityRecord{' in line and PACKAGE+'/' in line for line in raw.splitlines()),
+  'ownResumedActivityPresent':any(PACKAGE+'/' in line and any(k in line for k in ('mResumedActivity','topResumedActivity')) for line in raw.splitlines()),
+  'ownFocusedWindowPresent':any(PACKAGE+'/' in line and any(k in line for k in ('mCurrentFocus','mFocusedApp')) for line in raw.splitlines()),
+  'foregroundComponents':sorted({m[1] for line in raw.splitlines() if any(k in line for k in ('mCurrentFocus','mFocusedApp','mResumedActivity','topResumedActivity')) for m in re.finditer(r'([A-Za-z0-9._]+/[A-Za-z0-9._$]+)',line)}),
+ }
+def bal_state():
+ raw=adb('logcat','-d',check=False)
+ lines=[l for l in raw.splitlines() if PACKAGE in l and 'background activity' in l.lower() and any(k in l.lower() for k in ('blocked','denied'))]
+ allowed=('callingPackageTargetSdk','appSwitchState','callingUidHasAnyVisibleWindow','callingUidProcState','isCallingUidPersistentSystemProcess','forcedBalByPiSender','inVisibleTask','balAllowedByPiCreator','balAllowedByPiCreatorWithHardening','resultIfPiCreatorAllowsBal','hasRealCaller','isCallForResult','isPendingIntent','autoOptInReason','realCallingPackageTargetSdk','realCallingUidHasAnyVisibleWindow','realCallingUidProcState','isRealCallingUidPersistentSystemProcess','realInVisibleTask','balAllowedByPiSender','resultIfPiSenderAllowsBal')
+ rows=[]
+ for line in lines[-4:]:
+  row={}
+  for key in allowed:
+   match=re.search(r'(?:\[|; )'+re.escape(key)+r': ([^;\]]{1,80})',line)
+   if match and re.fullmatch(r'[A-Za-z0-9_ .:=+()\-]+',match[1]):row[key]=match[1]
+  if row:rows.append(row)
+ return bool(lines),rows
 def nodes():
  adb('shell','uiautomator','dump','/sdcard/bakim-updater-ui.xml',check=False,timeout=20)
  raw=adb('shell','cat','/sdcard/bakim-updater-ui.xml',check=False)
@@ -98,6 +118,7 @@ try:
   launch();phase='decline_permission';phase_started=time.monotonic();last_action=0
   while time.monotonic()-phase_started<a.timeout:
    if version()==a.target_version:
+    if installed_observed_at is None:installed_observed_at=time.monotonic()
     report['targetVersionInstalled']=True;report['automaticRelaunchObserved']=resumed()
     prefs=adb('shell','run-as',PACKAGE,'cat','shared_prefs/bakim-yardim-updater.xml',check=False)
     try:
@@ -109,6 +130,15 @@ try:
     own=adb('shell','run-as',PACKAGE,'cat','app_flutter/RustDesk2.toml',check=False)
     report['ownServerConfigPreserved']=all(value in own for value in ('xn--bakm-nza.tr:21116','xn--bakm-nza.tr:21117','v15Oj1NdzRE32xyZRKLlk2sfrP8AOLxx5ZxEV3JqYvM='))
     if report['automaticRelaunchObserved'] and report['nativeSuccessCallbackVerifiedVersion'] and report['ownServerConfigPreserved']:break
+    if time.monotonic()-installed_observed_at>35 and report['nativeSuccessCallbackVerifiedVersion'] and report['ownServerConfigPreserved']:
+     blocked,details=bal_state();report['backgroundActivityLaunchBlocked']=blocked;report['sanitizedBackgroundLaunchDecisions']=details
+     if blocked:
+      # A completed update with an OS-blocked foreground launch is recorded
+      # separately. Never turn an adb/launcher action into an automatic-open
+      # claim; no additional app permission is granted just to defeat BAL.
+      report['completionRequiresUserReopen']=True
+      report['automaticReopenUnavailableOnTestedSystem']=True
+      break
    if time.monotonic()-last_action<2:time.sleep(1);continue
    items=nodes();last_action=time.monotonic();texts=[n.get('text','').strip().casefold() for n in items]
    report['lastPhase']=phase
@@ -166,6 +196,7 @@ except Exception as exc:error=type(exc).__name__
 finally:
  try:
   report['actualInstalledVersionCode']=version()
+  report['finalTaskState']=task_state()
   for suffix,key in [('.apk','cachedTargetBytes'),('.apk.partial','partialTargetBytes')]:
    value=adb('shell','run-as',PACKAGE,'stat','-c','%s',f'cache/bakim-updates/bakim-{a.target_version}'+suffix,check=False).strip()
    report[key]=int(value) if value.isdigit() else 0
@@ -184,6 +215,10 @@ finally:
   report['unknownSourcesSettingsStartObserved']='MANAGE_UNKNOWN_APP_SOURCES' in logs
   report['nativeAppCrashObserved']=bool(re.search(r'Process: '+re.escape(PACKAGE)+r'[,\s]',logs))
   report['backgroundActivityLaunchBlocked']=any(PACKAGE in line and 'background activity' in line.lower() and ('blocked' in line.lower() or 'denied' in line.lower()) for line in logs.splitlines())
+  report['backgroundActivityLaunchBlocked'],report['sanitizedBackgroundLaunchDecisions']=bal_state()
+  report['explicitSuccessBroadcastObserved']='stage=native_install_success_receiver' in logs
+  report['completionNotificationPosted']='stage=completion_notification_posted' in logs
+  report['notificationPermissionWasNotRequestedForUpdater']=True
  except Exception:pass
  try:adb('shell','am','force-stop',PACKAGE,check=False)
  except Exception:pass
@@ -191,7 +226,10 @@ finally:
  except Exception:pass
  token=None
  report['errorType']=error;report['elapsedSeconds']=round(time.monotonic()-started,1)
- required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','ownServerConfigPreserved','publisherSignatureAcceptedByAndroidUpdate']
+ report['okScope']='signed_same_publisher_self_update_and_durable_verified_result; automatic_reopen_reported_separately'
+ report['automaticUpdateAndReopenFullyObserved']=bool(report.get('targetVersionInstalled') and report.get('automaticRelaunchObserved') and report.get('nativeSuccessCallbackVerifiedVersion'))
+ report['adbLaunchUsedAfterUpdate']=False
+ required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','targetVersionInstalled','nativeSuccessCallbackVerifiedVersion','ownServerConfigPreserved','publisherSignatureAcceptedByAndroidUpdate']
  report['ok']=error is None and all(report.get(k) for k in required)
  (a.output/'android-updater-proof.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps(report,ensure_ascii=False))

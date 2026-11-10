@@ -1,0 +1,33 @@
+name: Bakım.TR Yardım isolated Windows publisher probe
+'on':
+  push:
+    branches: [bakim-yardim-build]
+    paths:
+      - updater/windows-lab/**
+      - .github/workflows/bakim-yardim-publisher-probe.yml
+permissions:
+  contents: read
+concurrency:
+  group: bakim-yardim-isolated-publisher-probe
+  cancel-in-progress: true
+jobs:
+  publisher-probe:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    env:
+      BAKIM_NATIVE_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare signed catalog membership, catalog DB search and embedded test signature
+        run: ./updater/windows-lab/ci_publisher_probe.ps1 -WindowsSource updater/windows -ProofDirectory updater/windows-lab/proof
+      - name: Remove only this lab's owned ephemeral publisher and catalogs
+        if: always()
+        run: ./updater/windows/ci_trusted_publisher.ps1 -Action Cleanup -ProofDirectory updater/windows-lab/proof
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bakim-yardim-isolated-publisher-proof
+          path: updater/windows-lab/proof/*
+          retention-days: 14

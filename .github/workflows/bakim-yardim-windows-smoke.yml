@@ -50,9 +50,13 @@ jobs:
 
         powershell -ExecutionPolicy Bypass -File ci/windows-smoke.ps1 -Executable release/Bakim-TR-Yardim.exe -OutputDirectory release/proof
 
-        $inner=Join-Path $env:LOCALAPPDATA "bakim-tr-yardim/Bakim-TR-Yardim.exe"
+        $cfg=Get-Content branding/client-public.json -Raw -Encoding UTF8 | ConvertFrom-Json
 
-        $icon=Join-Path $env:LOCALAPPDATA "bakim-tr-yardim/data/flutter_assets/assets/icon.png"
+        $cache=Join-Path $env:LOCALAPPDATA $cfg.appName.ToLowerInvariant()
+
+        $inner=Join-Path $cache ($cfg.appName+".exe")
+
+        $icon=Join-Path $cache "data/flutter_assets/assets/icon.png"
 
         if(-not(Test-Path $inner)-or -not(Test-Path $icon)){throw "Isolated cache or branded icon absent"}
 

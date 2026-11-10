@@ -17,6 +17,10 @@ public class BakimWindows {
  [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int n);
  [DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out Rect r);
+ [DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int hgt,uint flags);
+ [DllImport("user32.dll")]public static extern bool ClientToScreen(IntPtr h,ref Point p);
+ [DllImport("user32.dll")]public static extern uint GetDpiForWindow(IntPtr h);
+ public struct Point {public int X,Y;}
  [DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")]public static extern void mouse_event(uint f,uint x,uint y,uint data,UIntPtr extra);
  public struct Rect {public int Left,Top,Right,Bottom;}
@@ -36,9 +40,55 @@ for($i=0;$i -lt 15;$i++){
 if(-not $controller){throw 'Synthetic Windows controller ID unavailable'}
 # Notify only our test operator through the web server access log before requesting approval.
 $null=Invoke-WebRequest -UseBasicParsing -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?controllerId='+$controller) -TimeoutSec 20
-Start-Process -FilePath $exe -ArgumentList @('--connect',$id)
+# Exercise the same ID field + Enter path a user follows. No custom URI scheme or CLI connect is used.
+Start-Sleep 12
+$cfg=Get-Content branding/client-public.json -Raw -Encoding UTF8 | ConvertFrom-Json
+$mainProcess=Get-Process | Where-Object {$_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq $cfg.appName} | Select-Object -First 1
+if(-not $mainProcess){throw 'Branded main GUI unavailable for connection test'}
+$main=[IntPtr]$mainProcess.MainWindowHandle
+[BakimWindows]::ShowWindow($main,9)|Out-Null
+[BakimWindows]::SetWindowPos($main,[IntPtr]::Zero,20,20,1000,700,0x0040)|Out-Null
+[BakimWindows]::SetForegroundWindow($main)|Out-Null
+Start-Sleep 2
 $remote=[IntPtr]::Zero
-for($i=0;$i -lt 60;$i++){Start-Sleep 2;$remote=[BakimWindows]::RemoteWindow();if($remote -ne [IntPtr]::Zero){break}}
+$entryMethod=''
+try {
+ Add-Type -AssemblyName UIAutomationClient
+ Add-Type -AssemblyName UIAutomationTypes
+ $root=[System.Windows.Automation.AutomationElement]::FromHandle($main)
+ $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Edit)
+ $edits=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$condition)
+ $editable=@($edits | Where-Object {$_.Current.IsEnabled -and -not $_.Current.IsPassword -and $_.Current.BoundingRectangle.Left -gt 220})
+ if($editable.Count -gt 0){
+  $editable[0].SetFocus()
+  [System.Windows.Forms.SendKeys]::SendWait('^a')
+  [System.Windows.Forms.SendKeys]::SendWait($id+'{ENTER}')
+  $entryMethod='GUI ID field via accessibility focus'
+  Start-Sleep 5
+  $remote=[BakimWindows]::RemoteWindow()
+ }
+} catch {$entryMethod=''}
+# Flutter semantics are not always exposed in a hosted runner. The fixed main window
+# makes the source-defined ID text-field bounds deterministic (200-DIP left pane).
+if($remote -eq [IntPtr]::Zero){
+ $scale=[double][BakimWindows]::GetDpiForWindow($main)/96.0
+ if($scale -lt 1){$scale=1.0}
+ foreach($fieldY in @(145,125,165,185)){
+  $point=New-Object BakimWindows+Point
+  $point.X=[int](390*$scale);$point.Y=[int]($fieldY*$scale)
+  [BakimWindows]::ClientToScreen($main,[ref]$point)|Out-Null
+  [BakimWindows]::SetForegroundWindow($main)|Out-Null
+  [BakimWindows]::SetCursorPos($point.X,$point.Y)|Out-Null
+  [BakimWindows]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+  [BakimWindows]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+  [System.Windows.Forms.SendKeys]::SendWait('^a')
+  [System.Windows.Forms.SendKeys]::SendWait($id+'{ENTER}')
+  Start-Sleep 5
+  $remote=[BakimWindows]::RemoteWindow()
+  if($remote -ne [IntPtr]::Zero){$entryMethod='GUI ID field via source-derived coordinates';break}
+ }
+}
+for($i=0;$i -lt 20 -and $remote -eq [IntPtr]::Zero;$i++){Start-Sleep 2;$remote=[BakimWindows]::RemoteWindow()}
 if($remote -eq [IntPtr]::Zero){throw 'Remote desktop UI did not appear'}
 # Our server operator accepts only the isolated fixture's request. No password is sent or logged.
 Start-Sleep 100
@@ -58,4 +108,4 @@ $bitmap=New-Object System.Drawing.Bitmap($width,$height)
 $graphics=[System.Drawing.Graphics]::FromImage($bitmap);$graphics.CopyFromScreen($r.Left,$r.Top,0,0,$bitmap.Size)
 $bitmap.Save((Join-Path $out 'isolated-remote-desktop.png'),[System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose();$bitmap.Dispose()
-@{remoteWindowStarted=$true;fixtureIdMatched=$true;keyboardMarkerSent=$true;targetIsIsolatedFixture=$true;source='GitHub-hosted Windows runner';requiresIndependentTargetMarkerVerification=$true} | ConvertTo-Json | Set-Content (Join-Path $out 'remote-smoke.json') -Encoding UTF8
+@{remoteWindowStarted=$true;fixtureIdMatched=$true;keyboardMarkerSent=$true;targetIsIsolatedFixture=$true;source='GitHub-hosted Windows runner';connectionEntryMethod=$entryMethod;usesNormalGuiConnectionFlow=$true;requiresIndependentTargetMarkerVerification=$true} | ConvertTo-Json | Set-Content (Join-Path $out 'remote-smoke.json') -Encoding UTF8

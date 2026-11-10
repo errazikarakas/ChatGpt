@@ -56,7 +56,8 @@ function Invoke-BoundedProcess([string]$Executable, [string[]]$Arguments, [strin
     $process.Refresh()
     $exit = $process.ExitCode
     if ($exit -ne 0) {
-      $detail = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Raw).Trim() } else { '' }
+      $detail = (@($stderr,$stdout) | ForEach-Object {if(Test-Path -LiteralPath $_){Get-Content -LiteralPath $_ -Raw}}) -join "`n"
+      $detail = $detail.Trim()
       if ($detail.Length -gt 1500) { $detail = $detail.Substring(0,1500) }
       throw ('Disposable laboratory call failed at ' + $Step + ', exit=' + $exit + ': ' + $detail)
     }
@@ -182,7 +183,7 @@ try {
         }
       }
       $signature = Assert-Signature $path
-      Invoke-SignTool -Arguments @('verify','/a','/pa',$path)
+      Invoke-SignTool -Arguments @('verify','/a','/as','/hash','SHA256','/pa',$path)
       $after = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
       $motwAfter = Get-MotwDigest $path
       if ($before -ne $after -or $motwBefore -ne $motwAfter) { throw 'Executable bytes or Mark-of-the-Web changed during catalog registration.' }

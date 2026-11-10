@@ -56,6 +56,10 @@ class BakimUpdateActivity : Activity() {
                     intent.getStringExtra("digest") ?: "", intent.getLongExtra("size", 0))
                 if (finishing || isDestroyed) return@thread
                 BakimUpdater.trace(this, "native_apk_validation_passed")
+                if (!BakimUpdater.canInstallWhenIdle(this)) {
+                    BakimUpdater.trace(this, "live_session_kept_current_app")
+                    runOnUiThread { continueCurrent(defer = false) }; return@thread
+                }
                 val installer = packageManager.packageInstaller
                 val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
                     setAppPackageName(packageName); setSize(file.length())
@@ -83,6 +87,10 @@ class BakimUpdateActivity : Activity() {
                 installer.openSession(sessionId).use { session ->
                     session.openWrite("base.apk", 0, file.length()).use { output -> file.inputStream().use { it.copyTo(output) }; session.fsync(output) }
                     if (finishing) { session.abandon(); return@thread }
+                    if (!BakimUpdater.canInstallWhenIdle(this)) {
+                        session.abandon(); BakimUpdater.trace(this, "live_session_kept_current_app")
+                        runOnUiThread { continueCurrent(defer = false) }; return@thread
+                    }
                     BakimUpdater.trace(this, "native_session_committing")
                     session.commit(pending.intentSender)
                 }

@@ -29,7 +29,7 @@ replace(manifest,'        <activity\n            android:name=".PermissionReques
 main=flutter/'lib/main.dart'
 replace(main,"import 'dart:io';","import 'dart:io';\nimport 'bakim/bakim_android_updater.dart';")
 s=main.read_text();start=s.index('void runMobileApp() async {');anchor='  runApp(App());';pos=s.index(anchor,start)+len(anchor)
-s=s[:pos]+"\n  if (isAndroid) { unawaited(BakimAndroidUpdater.checkAtStartup()); }"+s[pos:];main.write_text(s)
+s=s[:pos]+"\n  if (isAndroid) {\n    BakimAndroidUpdater.isBusy = () => gFFI.id.isNotEmpty || !stateGlobal.isInMainPage || gFFI.serverModel.clients.any((client) => !client.disconnected);\n    unawaited(BakimAndroidUpdater.checkAtStartup());\n  }"+s[pos:];main.write_text(s)
 manifest_path=root/'bakim-android-build-manifest.json'
 m=json.loads(manifest_path.read_text());m.update({'versionName':a.version_name,'versionCode':a.version_code,'signedFeedAutoCheck':True,'updateFeed':'https://xn--bakm-nza.tr/yardim-guncelle.php?platform=android','documentedSelfUpdateWithoutUserActionOnApi31':True,'systemInstallApprovalFallbackPreserved':True,'publisherCertificateSha256':'8965892c1419f7bcdead4dc152c8b2916d43e3a8e71521cd7e0ac4d6333e7341'});manifest_path.write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
 print('Signed own-server Android updater installed; system approval and monotonic same-publisher update required')

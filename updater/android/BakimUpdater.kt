@@ -4,12 +4,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.ApplicationInfo
+import android.app.Activity
 import android.os.Build
 import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Uses Android's own package identity in addition to the signed feed digest. */
 class BakimUpdateValidationException(val reason: String) : Exception(reason)
@@ -17,10 +21,26 @@ object BakimUpdater {
     const val PUBLISHER = "8965892c1419f7bcdead4dc152c8b2916d43e3a8e71521cd7e0ac4d6333e7341"
     const val PACKAGE = "tr.bakim.yardim"
     const val CHANNEL = "bakim.tr/yardim-updater"
+    private var updaterChannel: MethodChannel? = null
+    /** Called only from the worker; a missing/busy Dart session fails closed. */
+    fun canInstallWhenIdle(activity: Activity): Boolean {
+        val done = CountDownLatch(1)
+        var allowed = false
+        activity.runOnUiThread {
+            val channel = updaterChannel
+            if (channel == null) { done.countDown() }
+            else channel.invokeMethod("canInstallNow", null, object : MethodChannel.Result {
+                override fun success(result: Any?) { allowed = result == true; done.countDown() }
+                override fun error(code: String, message: String?, details: Any?) { done.countDown() }
+                override fun notImplemented() { done.countDown() }
+            })
+        }
+        return done.await(5, TimeUnit.SECONDS) && allowed
+    }
     fun preferences(context: Context) = context.getSharedPreferences("bakim-yardim-updater", Context.MODE_PRIVATE)
     fun directory(context: Context) = File(context.cacheDir, "bakim-updates").apply { mkdirs() }
     fun trace(context: Context, stage: String, error: Exception? = null) {
-        if (!BuildConfig.DEBUG) return
+        if ((context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
         val code = if (error is BakimUpdateValidationException) error.reason else error?.javaClass?.simpleName
         val prefs = preferences(context)
         val history = (prefs.getString("updateTrace", "") ?: "").takeLast(2000)
@@ -64,7 +84,9 @@ object BakimUpdater {
         return file
     }
     fun register(activity: MainActivity, engine: FlutterEngine) {
-        MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
+        updaterChannel = channel
+        channel.setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
                     "info" -> {

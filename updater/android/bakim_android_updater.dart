@@ -9,9 +9,12 @@ import 'bakim_update_feed.dart';
 class BakimAndroidUpdater {
   static const _channel = MethodChannel('bakim.tr/yardim-updater');
   static bool _started = false;
+  static bool Function()? isBusy;
+  static bool _busy() { try { return isBusy?.call() ?? true; } catch (_) { return true; } }
   static Future<void> checkAtStartup() async {
     if (!Platform.isAndroid || _started) return;
     _started = true;
+    _channel.setMethodCallHandler((call) async => call.method == 'canInstallNow' ? !_busy() : null);
     await Future<void>.delayed(const Duration(seconds: 2));
     final http = HttpClient()..connectionTimeout = const Duration(seconds: 5);
     http.userAgent = 'Bakim.TR-Yardim/Android-Updater';
@@ -42,6 +45,7 @@ class BakimAndroidUpdater {
         sdkInt: info['sdkInt'] as int, platform: platform, fixture: fixture);
       if (release == null || info['deferUpdatesUntil'] is int &&
           (info['deferUpdatesUntil'] as int) > DateTime.now().millisecondsSinceEpoch) return;
+      if (_busy()) return;
       final folder = Directory(info['cacheDirectory'] as String);
       await folder.create(recursive: true);
       final apk = File('${folder.path}/bakim-${release.versionCode}.apk');
@@ -66,6 +70,9 @@ class BakimAndroidUpdater {
         if (await apk.exists()) await apk.delete();
         await partial.rename(apk.path); partial = null;
       }
+      // Keep the verified APK for a later opening; never replace a live remote
+      // assistance session merely because its background download completed.
+      if (_busy()) return;
       await _channel.invokeMethod('install', <String, dynamic>{
         'fileName': 'bakim-${release.versionCode}.apk',
         'versionCode': release.versionCode, 'sha256': release.sha256,

@@ -60,17 +60,20 @@ type windowsPlatform struct{ root string }
 
 func newWindowsPlatform(root string) *windowsPlatform { return &windowsPlatform{root: root} }
 func (p *windowsPlatform) Lock(root string) (func(), bool, error) {
+	runtime.LockOSThread()
 	sum, _, _ := fileDigest(strings.NewReader(strings.ToLower(root)))
 	name := utf16("Local\\BakimTRYardimUpdater." + sum[:24])
 	h, _, err := createMutex.Call(0, 1, uintptr(unsafe.Pointer(name)))
 	if h == 0 {
+		runtime.UnlockOSThread()
 		return nil, false, nativeError("CreateMutex", err)
 	}
 	if err == syscall.Errno(183) {
 		closeHandle.Call(h)
+		runtime.UnlockOSThread()
 		return func() {}, false, nil
 	}
-	return func() { releaseMutex.Call(h); closeHandle.Call(h) }, true, nil
+	return func() { releaseMutex.Call(h); closeHandle.Call(h); runtime.UnlockOSThread() }, true, nil
 }
 func (p *windowsPlatform) AtomicReplace(from, to string) error {
 	ok, _, err := moveFile.Call(uintptr(unsafe.Pointer(utf16(from))), uintptr(unsafe.Pointer(utf16(to))), 0x1|0x8)

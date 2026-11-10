@@ -56,7 +56,7 @@ except Exception as exc:error=type(exc).__name__ # Do not export URLs, IDs, conf
 finally:
  adb('shell','am','force-stop',PACKAGE,check=False)
  report['elapsedSeconds']=round(time.time()-start,1);report['errorType']=error
- required=['realNativeAppStarted','nativeHeartbeatReady','ownServerConfigMatched','controllerPreannounced','normalDeepLinkUsed','realVideoFrameReceived','secureSession','targetPeerInfoReceived']
+ required=['realNativeAppStarted','nativeHeartbeatReady','ownServerConfigMatched','controllerPreannounced','normalDeepLinkUsed','realVideoFrameReceived','secureSession','targetPeerInfoReceived','relayUsed','noPublicServerInLogs']
  report['ok']=error is None and all(report.get(k) for k in required) and not report.get('nativeCrashObserved',False)
  (a.output/'android-controller-proof.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps(report,ensure_ascii=False))

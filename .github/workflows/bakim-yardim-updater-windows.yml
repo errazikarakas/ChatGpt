@@ -1,0 +1,63 @@
+name: Bakım.TR Yardım Windows secure updater
+'on':
+  push:
+    branches:
+    - bakim-yardim-build
+    paths:
+    - updater/windows/**
+    - .github/workflows/bakim-yardim-updater-windows.yml
+permissions:
+  contents: read
+concurrency:
+  group: bakim-yardim-windows-updater
+  cancel-in-progress: false
+jobs:
+  windows-updater:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: actions/setup-go@v5
+      with:
+        go-version: 1.27.4
+        cache: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Pinned seed engine and professional app resource
+      run: 'python -m pip install Pillow
+
+        python updater/windows/prepare_build.py'
+    - name: Compile small native portable launcher
+      run: ./updater/windows/build_windows.ps1
+    - name: Authenticode signing hook
+      run: ./updater/windows/sign_windows.ps1 -File updater/windows/release/Bakim-TR-Yardim.exe
+    - name: Real signed-update, rollback, mutex, preserved-session, MOTW and Unicode child GUI tests
+      run: ./updater/windows/smoke_windows.ps1
+    - name: Record final build hashes and source provenance
+      run: '$exe=''updater/windows/release/Bakim-TR-Yardim.exe''
+
+        (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()+''  Bakim-TR-Yardim.exe'' | Set-Content updater/windows/release/SHA256SUMS -Encoding ASCII
+
+        Copy-Item updater/windows/AGPL-3.0.txt updater/windows/release/
+
+        @{launcherVersion=''1.0.0'';sourceCommit=$env:GITHUB_SHA;originalEngineSHA256=''d9ec96f4c8b6fa14e95e5aec4dc8998c84072ec470f088bd6b84f481092835a1'';authenticodeConfigured=$false;originEvidencePreserved=$true}
+        | ConvertTo-Json | Set-Content updater/windows/release/build.json -Encoding UTF8'
+    - name: Upload verified portable launcher
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-windows-updater
+        path: updater/windows/release/*
+        retention-days: 30
+    - name: Upload Windows updater proof
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-windows-updater-proof
+        path: updater/windows/proof/*
+        retention-days: 30

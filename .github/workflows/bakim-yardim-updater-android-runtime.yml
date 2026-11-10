@@ -29,6 +29,9 @@ jobs:
                   value=trigger[key]
                   assert re.fullmatch('[0-9a-f]{64}',value)
                   out.write(env+'='+value+'\n')
+              observe=trigger.get('observeOnly',False)
+              assert isinstance(observe,bool)
+              out.write('BAKIM_RUNTIME_FLAGS='+('--observe-only' if observe else '')+'\n')
           PY
       - name: Generate disposable runner-only RSA private key
         run: |
@@ -69,7 +72,7 @@ jobs:
             --private-key "$RUNNER_TEMP/bakim-update-private.pem"
             --fixture-sha256 "$BAKIM_FIXTURE_SHA256"
             --initial-sha256 "$BAKIM_INITIAL_SHA256"
-            --output artifacts/android-updater --timeout 300
+            --output artifacts/android-updater --timeout 300 $BAKIM_RUNTIME_FLAGS
       - name: Retain only the sanitized update proof
         if: always()
         uses: actions/upload-artifact@v4

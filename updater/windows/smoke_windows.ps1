@@ -10,6 +10,7 @@ if($LASTEXITCODE -ne 0){throw 'Broken synthetic fixture compilation failed'}
 $env:BAKIM_FIXTURE_GOOD=Join-Path $fixture 'good.exe'
 $env:BAKIM_FIXTURE_BAD=Join-Path $fixture 'bad.exe'
 $env:BAKIM_NATIVE_TESTS='1'
+$env:BAKIM_CI_PENDING=Join-Path $base 'proof/ci-pending-launch.json'
 $helper=Join-Path $base 'ci_approve_own_fixtures.ps1'
 $tokens=$null;$parseErrors=$null
 [void][System.Management.Automation.Language.Parser]::ParseFile($helper,[ref]$tokens,[ref]$parseErrors)
@@ -27,10 +28,13 @@ try {
  $exe=Join-Path $base 'release/Bakim-TR-Yardim.exe'
  # Simulate an ordinary Internet download without stripping Windows origin evidence.
  Set-Content -LiteralPath ($exe+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
+ @{path=$exe;sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant();callerPid=$PID;utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content $env:BAKIM_CI_PENDING -Encoding UTF8
  Start-Process -FilePath $exe
  $ready=$false
  for($i=0;$i -lt 45;$i++){
   Start-Sleep 1
+  $expectedEngine=Join-Path $env:LOCALAPPDATA 'BakimTRYardim/Launcher/versions/2026111001/engine.exe'
+  if(Test-Path $expectedEngine){$digest=(Get-FileHash $expectedEngine -Algorithm SHA256).Hash.ToLowerInvariant();if($digest -eq 'd9ec96f4c8b6fa14e95e5aec4dc8998c84072ec470f088bd6b84f481092835a1'){@{path=$expectedEngine;sha256=$digest;callerPid=$PID;utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content $env:BAKIM_CI_PENDING -Encoding UTF8}}
   $inner=Get-Process | Where-Object {$_.ProcessName -eq 'Bakım.TR Yardım' -and $_.MainWindowTitle -eq 'Bakım.TR Yardım'}
   if($inner){$ready=$true;break}
  }

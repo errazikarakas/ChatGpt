@@ -17,7 +17,7 @@ func TestWindowsActualLauncherDelegationAndExactChildRollback(t *testing.T) {
 	nativeOnly(t)
 	f := newTestFeed(t)
 	root := t.TempDir()
-	platform := newWindowsPlatform(root)
+	platform := auditedWindowsPlatform(t, root)
 	core := &Updater{Root: root, Trust: f.trust, OS: platform, FeedClient: f.server.Client(), DownloadClient: f.server.Client(), HealthWait: 5 * time.Second}
 	t.Cleanup(func() { stopFixtureProcesses(t, platform) })
 	good, err := os.ReadFile(os.Getenv("BAKIM_FIXTURE_GOOD"))

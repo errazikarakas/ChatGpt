@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -88,8 +87,7 @@ func (d *Delegator) managedRequest() (*handover, error) {
 	if err != nil || time.Now().After(until) || until.After(time.Now().Add(2*time.Minute)) {
 		return nil, errors.New("managed handover expired")
 	}
-	exe, err := os.Executable()
-	if err != nil || !strings.EqualFold(filepath.Clean(exe), filepath.Clean(d.Store.path(d.BuildCode))) {
+	if !d.OS.ProcessMatches(os.Getpid(), d.Store.path(d.BuildCode)) {
 		return nil, errors.New("managed image location rejected")
 	}
 	m, err := d.Store.valid(d.BuildCode)

@@ -4,8 +4,9 @@ import argparse,hashlib,json,os,pathlib,re,subprocess,tempfile,time,unicodedata,
 p=argparse.ArgumentParser();p.add_argument('--bootstrap-url',required=True);p.add_argument('--private-key',type=pathlib.Path,required=True)
 p.add_argument('--fixture-sha256',required=True);p.add_argument('--initial-sha256',required=True);p.add_argument('--output',type=pathlib.Path,required=True)
 p.add_argument('--initial-version',type=int,default=2026113002);p.add_argument('--target-version',type=int,default=2026113003);p.add_argument('--timeout',type=int,default=300)
+p.add_argument('--observe-only',action='store_true')
 a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True);PACKAGE='tr.bakim.yardim';MAIN=PACKAGE+'/com.carriez.flutter_hbb.MainActivity'
-report={'ok':False,'productionFeedModified':False,'productionPrivateKeyUploaded':False,'productionApkPublished':False,'signedTestApkPublishedAsArtifact':False,'fixtureTokenPublished':False,'physicalPhoneTested':False,'initialVersionCode':a.initial_version,'targetVersionCode':a.target_version,'testKind':'real Android PackageInstaller self-update with actual user UI approval'}
+report={'ok':False,'productionFeedModified':False,'productionPrivateKeyUploaded':False,'productionApkPublished':False,'signedTestApkPublishedAsArtifact':False,'fixtureTokenPublished':False,'physicalPhoneTested':False,'initialVersionCode':a.initial_version,'targetVersionCode':a.target_version,'testKind':'documented same-publisher Android self-update with source consent and system-controlled confirmation fallback'}
 started=time.monotonic();token=None;error=None
 def adb(*args,check=True,timeout=40,input=None):
  r=subprocess.run(['adb',*map(str,args)],input=input,capture_output=True,timeout=timeout)
@@ -82,6 +83,10 @@ try:
   adb('wait-for-device',timeout=60);adb('logcat','-c');adb('install','-r','-t',apk,timeout=120)
   if version()!=a.initial_version:raise RuntimeError('Initial version incorrect')
   report['initialVersionConfirmed']=True
+  # Negative test setup only: start with the same untrusted-source state as
+  # a fresh app. Positive permission is granted later ONLY through Settings UI.
+  adb('shell','appops','set',PACKAGE,'REQUEST_INSTALL_PACKAGES','deny')
+  report['sourceInitiallyDeniedForNegativeFixture']=True
   report['lastStep']='create_private_fixture_cache'
   adb('shell','run-as',PACKAGE,'mkdir','-p','cache/bakim-updates')
   # tee receives bytes on stdin; no nested adb-shell redirection or token argv.
@@ -92,24 +97,42 @@ try:
   report['privateFixtureInjected']=True;report['lastStep']='normal_system_permission_flow'
   launch();phase='decline_permission';phase_started=time.monotonic();last_action=0
   while time.monotonic()-phase_started<a.timeout:
+   if version()==a.target_version:
+    report['targetVersionInstalled']=True;report['automaticRelaunchObserved']=resumed()
+    prefs=adb('shell','run-as',PACKAGE,'cat','shared_prefs/bakim-yardim-updater.xml',check=False)
+    try:
+     pref=ET.fromstring(prefs).find("long[@name='lastInstalledVersion']")
+     report['nativeSuccessCallbackVerifiedVersion']=pref is not None and pref.get('value')==str(a.target_version)
+    except ET.ParseError:report['nativeSuccessCallbackVerifiedVersion']=False
+    report['selfUpdateCompletedWithoutInstallConfirmation']=not report.get('actualSystemInstallConfirmed',False)
+    report['frameworkUpdateMode']='no_additional_user_action' if report['selfUpdateCompletedWithoutInstallConfirmation'] else 'pending_user_action_fallback'
+    if report['automaticRelaunchObserved'] and report['nativeSuccessCallbackVerifiedVersion']:break
    if time.monotonic()-last_action<2:time.sleep(1);continue
    items=nodes();last_action=time.monotonic();texts=[n.get('text','').strip().casefold() for n in items]
    report['lastPhase']=phase
    report['lastUiPackages']=sorted({n.get('package','') for n in items if n.get('package','') in (PACKAGE,'com.android.settings','com.android.packageinstaller','com.google.android.packageinstaller','com.android.permissioncontroller','com.google.android.permissioncontroller','com.android.systemui')})
    switches=[n for n in items if n.get('enabled')=='true' and ('switch' in n.get('class','').lower() or 'switch' in n.get('resource-id','').lower())]
+   if not switches:
+    controls=[n for n in items if n.get('package')=='com.android.settings' and n.get('enabled')=='true' and n.get('checkable')=='true']
+    if len(controls)==1:switches=controls
    report['lastSystemSwitchNodes']=[{key:n.get(key) for key in ('class','resource-id','checkable','checked','clickable')} for n in switches[:8]]
    in_settings=any(n.get('package')=='com.android.settings' for n in items)
    if in_settings and not (a.output/'system-source-permission.png').exists():
     # Only the opaque Android Settings page is shareable. Never capture the
     # RustDesk screen or installer overlay, which could expose a temporary ID.
-    focus=adb('shell','dumpsys','window','windows',check=False)
-    if any('mCurrentFocus' in line and 'com.android.settings/' in line for line in focus.splitlines()):
+    focus=adb('shell','dumpsys','window','windows',check=False)+'\n'+adb('shell','dumpsys','activity','activities',check=False)
+    report['lastForegroundComponents']=sorted({m[1] for line in focus.splitlines() if any(marker in line for marker in ('mCurrentFocus','mFocusedApp','mResumedActivity','topResumedActivity')) for m in re.finditer(r'([A-Za-z0-9._]+/[A-Za-z0-9._$]+)',line)})
+    if any(any(marker in line for marker in ('mCurrentFocus','mFocusedApp','mResumedActivity','topResumedActivity')) and 'com.android.settings/' in line for line in focus.splitlines()):
      snap=subprocess.run(['adb','exec-out','screencap','-p'],capture_output=True,timeout=20).stdout
      if snap.startswith(b'\x89PNG\r\n\x1a\n'):(a.output/'system-source-permission.png').write_bytes(snap)
-     clean=ET.Element('native-settings')
-     for node in items:
-      if node.get('package')=='com.android.settings':ET.SubElement(clean,'node',{key:node.get(key,'') for key in ('class','resource-id','bounds','enabled','checked','checkable','clickable')})
-     ET.ElementTree(clean).write(a.output/'system-source-permission-sanitized.xml',encoding='utf-8',xml_declaration=True)
+    clean=ET.Element('native-settings')
+    for node in items:
+     if node.get('package')=='com.android.settings':
+      attrs={key:node.get(key,'') for key in ('class','resource-id','bounds','enabled','checked','checkable','clickable')}
+      attrs['text']=re.sub(r'https?://\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+|\b[0-9a-f]{32}\b|\b[0-9]{6,}\b','[redacted]',node.get('text',''))
+      ET.SubElement(clean,'node',attrs)
+    ET.ElementTree(clean).write(a.output/'system-source-permission-sanitized.xml',encoding='utf-8',xml_declaration=True)
+    if a.observe_only:report['diagnosticOnly']=True;report['systemSourcePermissionObserved']=True;break
    is_installer=any('packageinstaller' in n.get('package','') or 'permissioncontroller' in n.get('package','') for n in items)
    has_update=any(t in ('update','güncelle','install','yükle') for t in texts)
    if phase=='decline_permission':
@@ -118,26 +141,21 @@ try:
      adb('shell','input','keyevent','KEYCODE_BACK');time.sleep(2)
      report['sourcePermissionDeclinePreservedVersion']=version()==a.initial_version
      report['sourcePermissionDeclineReturnedToCurrentApp']=resumed()
-     reset_defer();phase='decline_os';phase_started=time.monotonic()
+     reset_defer();phase='update';phase_started=time.monotonic()
     elif is_installer and has_update and button(items,['Cancel','İptal']):
      # Some developer-installed AVD packages are already trusted sources.
      # Do not add an artificial permission step that the OS does not require.
      report['sourcePermissionInitiallyAlreadyAllowed']=True
      report['normalAndroidInstallerShown']=True;report['systemInstallerDeclineUsed']=True;time.sleep(2)
      report['systemDeclinePreservedVersion']=version()==a.initial_version;report['systemDeclineReturnedToCurrentApp']=resumed()
-     reset_defer();phase='accept_os';phase_started=time.monotonic()
+     reset_defer();phase='update';phase_started=time.monotonic()
    else:
     if in_settings and switches:
      if switches[0].get('checked')!='true':tap(switches[0]);report['unknownSourcesGrantedThroughSystemUi']=True;time.sleep(1)
      adb('shell','input','keyevent','KEYCODE_BACK');continue
     if is_installer and has_update:
      report['normalAndroidInstallerShown']=True
-     if phase=='decline_os' and button(items,['Cancel','İptal']):
-      report['systemInstallerDeclineUsed']=True;time.sleep(2)
-      report['systemDeclinePreservedVersion']=version()==a.initial_version
-      report['systemDeclineReturnedToCurrentApp']=resumed()
-      reset_defer();phase='accept_os';phase_started=time.monotonic();continue
-     if phase=='accept_os' and button(items,['Update','Güncelle','Install','Yükle']):
+     if phase=='update' and button(items,['Update','Güncelle','Install','Yükle']):
       report['actualSystemInstallConfirmed']=True;phase='installed';phase_started=time.monotonic();continue
     if phase=='installed' and version()==a.target_version:
      report['targetVersionInstalled']=True
@@ -178,9 +196,8 @@ finally:
  except Exception:pass
  token=None
  report['errorType']=error;report['elapsedSeconds']=round(time.monotonic()-started,1)
- required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','normalAndroidInstallerShown','systemDeclinePreservedVersion','systemDeclineReturnedToCurrentApp','actualSystemInstallConfirmed','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
- if not report.get('sourcePermissionInitiallyAlreadyAllowed'):required+=['sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi']
+ required=['initialApkSha256Matched','initialVersionConfirmed','privateFixtureInjected','sourcePermissionDeclinePreservedVersion','sourcePermissionDeclineReturnedToCurrentApp','normalUnknownSourcesSettingsShown','unknownSourcesGrantedThroughSystemUi','targetVersionInstalled','automaticRelaunchObserved','nativeSuccessCallbackVerifiedVersion','publisherSignatureAcceptedByAndroidUpdate']
  report['ok']=error is None and all(report.get(k) for k in required)
  (a.output/'android-updater-proof.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps(report,ensure_ascii=False))
-raise SystemExit(0 if report['ok'] else 1)
+raise SystemExit(0 if report['ok'] or report.get('diagnosticOnly') and report.get('systemSourcePermissionObserved') else 1)

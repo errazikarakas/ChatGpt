@@ -43,11 +43,13 @@ public static class BakimCiConsent {
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+ [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr h,int a,out Rect r,int n);
  [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr w,IntPtr l,uint f,uint t,out UIntPtr v);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] private static extern uint GetLongPathName(string s,StringBuilder b,uint n);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] private static extern uint GetShortPathName(string s,StringBuilder b,uint n);
- private static Node Read(IntPtr h){var a=new StringBuilder(32768);var b=new StringBuilder(256);uint p;Rect r;GetWindowText(h,a,a.Capacity);GetClassName(h,b,b.Capacity);GetWindowThreadProcessId(h,out p);GetWindowRect(h,out r);return new Node{Handle=h.ToInt64(),ProcessId=p,Title=a.ToString(),ClassName=b.ToString(),Visible=IsWindowVisible(h),Enabled=IsWindowEnabled(h),Bounds=r};}
+ private static Node Read(IntPtr h){var a=new StringBuilder(32768);var b=new StringBuilder(256);uint p;Rect r;GetWindowText(h,a,a.Capacity);GetClassName(h,b,b.Capacity);GetWindowThreadProcessId(h,out p);GetWindowRect(h,out r);try{Rect physical;if(DwmGetWindowAttribute(h,9,out physical,Marshal.SizeOf(typeof(Rect)))==0)r=physical;}catch{}return new Node{Handle=h.ToInt64(),ProcessId=p,Title=a.ToString(),ClassName=b.ToString(),Visible=IsWindowVisible(h),Enabled=IsWindowEnabled(h),Bounds=r};}
  public static Node[] Windows(){var l=new List<Node>();EnumWindows((h,a)=>{if(IsWindowVisible(h))l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
  public static Node[] Children(long p){var l=new List<Node>();EnumChildWindows(new IntPtr(p),(h,a)=>{l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
  public static uint Process(long h){uint p;GetWindowThreadProcessId(new IntPtr(h),out p);return p;}
@@ -56,12 +58,20 @@ public static class BakimCiConsent {
 }
 '@
 } catch {Event @{event='setup-failed';error=Redact $_.Exception.Message};exit 13}
+try{[void][BakimCiConsent]::SetProcessDPIAware()}catch{}
 $uia=$false;$drawing=$false
 try {Add-Type -AssemblyName UIAutomationClient;Add-Type -AssemblyName UIAutomationTypes;$uia=$true}catch{Event @{event='uia-unavailable-native-fallback';error=Redact $_.Exception.Message}}
 try {Add-Type -AssemblyName System.Drawing;$drawing=$true}catch{Event @{event='drawing-unavailable';error=Redact $_.Exception.Message}}
 $testRootPattern='^TestWindows(?:RealSignedUpdateBusyDeferralAndRollback|ExactProductionEngineChildGUI|ActualLauncherDelegationAndExactChildRollback)[0-9]+$'
 $knownHashes=@{};$candidates=@();$processInfo=@{};$lastRefresh=[DateTime]::MinValue
 $seen=@{};$attempts=@{};$lastClick=@{}
+$script:driverIdentity=$null
+try{
+ $selfDetails=Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID) -ErrorAction Stop
+ $driver=Get-Process -Id ([int]$selfDetails.ParentProcessId) -ErrorAction Stop
+ $script:driverIdentity=@{processId=$driver.Id;startTicks=$driver.StartTime.ToUniversalTime().Ticks}
+}catch{}
+
 function Add-KnownHash([string]$Path){if($Path -and (Test-Path -LiteralPath $Path -PathType Leaf)){try{$script:knownHashes[(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()]=$true}catch{}}}
 function Refresh-Known {
  if(((Get-Date)-$script:lastRefresh).TotalSeconds -lt 2){return};$script:lastRefresh=Get-Date
@@ -78,12 +88,46 @@ function Refresh-Known {
  $script:processInfo=@{};try{foreach($p in Get-CimInstance Win32_Process -ErrorAction Stop){$script:processInfo[[int]$p.ProcessId]=$p}}catch{}
 }
 function Trusted-Caller([int]$ProcessId){
+ if($script:driverIdentity -and $ProcessId -eq $script:driverIdentity.processId){
+  try{$driver=Get-Process -Id $ProcessId -ErrorAction Stop;if($driver.StartTime.ToUniversalTime().Ticks -eq $script:driverIdentity.startTicks){return $true}}catch{}
+ }
+
  for($depth=0;$depth -lt 5 -and $ProcessId -gt 0;$depth++){
   $p=$script:processInfo[$ProcessId];if(-not $p){return $false}
   if($p.Name -match '\.test\.exe$' -and $p.ExecutablePath -match '\\go-build[^\\]+\\'){return $true}
   foreach($known in $script:candidates){if($p.ExecutablePath -and ([BakimCiConsent]::LongPath([string]$p.ExecutablePath) -ieq $known.path)){return $true}}
   $ProcessId=[int]$p.ParentProcessId
  };return $false
+}
+function Pending-Match([string]$DialogText){
+ $file=Join-Path $ProofDirectory 'ci-pending-launch.json'
+ if(-not (Test-Path -LiteralPath $file -PathType Leaf)){return @()}
+ try{
+  if((Get-Item -LiteralPath $file).Length -gt 4096){return @()}
+  $pending=Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+  if(-not ($pending.path -is [string]) -or -not ($pending.sha256 -is [string]) -or $pending.sha256 -notmatch '^[0-9a-fA-F]{64}$'){return @()}
+  $callerId=[int]$pending.callerPid;if($callerId -le 0){return @()}
+  $when=[datetime]::Parse([string]$pending.utc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+  $age=([datetime]::UtcNow-$when).TotalSeconds;if($age -gt 120 -or $age -lt -10){return @()}
+  $live=Get-Process -Id $callerId -ErrorAction Stop
+  if(-not $script:processInfo.ContainsKey($callerId)){
+   $detail=Get-CimInstance Win32_Process -Filter ('ProcessId='+$callerId) -ErrorAction Stop
+   if($detail){$script:processInfo[$callerId]=$detail}
+  }
+  if(-not (Trusted-Caller $callerId)){return @()}
+  $full=[BakimCiConsent]::LongPath([IO.Path]::GetFullPath([string]$pending.path))
+  $same=@($script:candidates | Where-Object {$_.path -ieq $full -and $_.sha256 -ieq $pending.sha256})
+  if($same.Count -eq 0 -or -not $script:knownHashes.ContainsKey($pending.sha256.ToLowerInvariant())){return @()}
+  if((Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash -ine $pending.sha256){return @()}
+  $names=@($same | Where-Object {$DialogText -match ('(?i)(?<![A-Za-z0-9_-])'+[regex]::Escape($_.name)+'(?![A-Za-z0-9_.-])')})
+  if($names.Count -gt 0){return $names}
+  # VersionInfo may display the branded product name rather than the executable filename.
+  $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($full)
+  foreach($label in @($version.FileDescription,$version.ProductName)){
+   if($label -and $label -match '(?i)^Bak[ıi]m[. -]?TR.*Yard[ıi]m' -and $DialogText.IndexOf($label,[StringComparison]::OrdinalIgnoreCase) -ge 0){return $same}
+  }
+ }catch{}
+ return @()
 }
 function Text-And-Actions($Window,$Native){
  $texts=New-Object 'System.Collections.Generic.List[string]';$actions=New-Object 'System.Collections.Generic.List[object]';$texts.Add([string]$Window.Title)
@@ -120,14 +164,16 @@ while((Get-Date) -lt $until){
    $text=[string]$content.text;$normalized=$text.Replace('/','\').ToLowerInvariant()
    $matched=@($script:candidates | Where-Object {$normalized.Contains($_.path.ToLowerInvariant()) -or $normalized.Contains($_.short.ToLowerInvariant())});$authorization='exact-full-or-short-path-and-known-hash'
    if($matched.Count -eq 0){$owner=[BakimCiConsent]::GetWindow([IntPtr]$window.Handle,4);$ownerPid=if($owner -ne [IntPtr]::Zero){[BakimCiConsent]::Process($owner.ToInt64())}else{0};$caller=(Trusted-Caller ([int]$window.ProcessId)) -or (Trusted-Caller ([int]$ownerPid));if($caller){$matched=@($script:candidates | Where-Object {$text -match ('(?i)(?<![A-Za-z0-9_-])'+[regex]::Escape($_.name)+'(?![A-Za-z0-9_.-])')});$authorization='known-hashed-fixture-name-and-trusted-test-caller'}}
+   if($matched.Count -eq 0){$pendingMatch=@(Pending-Match $text);if($pendingMatch.Count -gt 0){$matched=$pendingMatch;$authorization='pending-exact-path-sha-live-caller-ttl120'}}
    $stateKey=[string]$window.Handle+'|'+[string]$text.GetHashCode()
    if(-not $seen.ContainsKey($stateKey)){$seen[$stateKey]=$true;Event @{event='security-dialog';handle=$window.Handle;pid=$window.ProcessId;class=$window.ClassName;title=Redact $window.Title;text=Redact $text;authorized=($matched.Count -gt 0);authorization=$authorization;matchingNames=@($matched | ForEach-Object {$_.name} | Select-Object -Unique);buttons=@($content.actions | ForEach-Object {Redact $_.name} | Select-Object -Unique)};Save-Dialog $window}
-   if($matched.Count -eq 0){continue}
    foreach($wanted in @('More info','Daha fazla bilgi','Run anyway','Yine de çalıştır','Run','Çalıştır')){
+    $informationOnly=$wanted -in @('More info','Daha fazla bilgi')
+    if($matched.Count -eq 0 -and -not ($informationOnly -and ($securityProcess -or $window.Title -match '(?i)SmartScreen'))){continue}
     $action=@($content.actions | Where-Object {(($_.name -replace '&','') -replace '\s+',' ').Trim() -ieq $wanted} | Select-Object -First 1);if($action.Count -eq 0){continue}
     $actionKey=[string]$window.Handle+'|'+$wanted;if($lastClick.ContainsKey($actionKey) -and ((Get-Date)-$lastClick[$actionKey]).TotalSeconds -lt 1.2){break};$lastClick[$actionKey]=Get-Date
     if(-not $attempts.ContainsKey($actionKey)){$attempts[$actionKey]=0};$attempts[$actionKey]++;if($attempts[$actionKey] -gt 4){break}
-    $method=Click-Action $window $action[0] $attempts[$actionKey];Event @{event='normal-fixture-user-consent';handle=$window.Handle;action=$wanted;method=$method;attempt=$attempts[$actionKey];authorization=$authorization};break
+    $method=Click-Action $window $action[0] $attempts[$actionKey];Event @{event=$(if($informationOnly){'information-only-more-info'}else{'normal-fixture-user-consent'});handle=$window.Handle;action=$wanted;method=$method;attempt=$attempts[$actionKey];authorization=$(if($informationOnly -and $matched.Count -eq 0){'information-only-no-execution'}else{$authorization})};break
    }
   }
  }catch{Event @{event='watcher-iteration-error';error=Redact $_.Exception.Message}}

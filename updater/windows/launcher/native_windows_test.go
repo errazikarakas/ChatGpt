@@ -18,6 +18,30 @@ func nativeOnly(t *testing.T) {
 		t.Skip("disposable Windows integration runner only")
 	}
 }
+func auditedWindowsPlatform(t *testing.T, root string) *windowsPlatform {
+	t.Helper()
+	p := newWindowsPlatform(root)
+	p.BeforeLaunch = func(path string) {
+		audit := os.Getenv("BAKIM_CI_PENDING")
+		if audit == "" {
+			t.Fatal("CI pending launch audit missing")
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum, _, err := fileDigest(file)
+		_ = file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(map[string]any{"path": path, "sha256": sum, "callerPid": os.Getpid(), "utc": time.Now().UTC().Format(time.RFC3339Nano)})
+		if err = os.WriteFile(audit, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p
+}
 func stopFixtureProcesses(t *testing.T, p *windowsPlatform) {
 	t.Helper()
 	prefix := strings.ToLower(p.root) + string(os.PathSeparator)
@@ -31,7 +55,7 @@ func stopFixtureProcesses(t *testing.T, p *windowsPlatform) {
 func TestWindowsNativeMutexAndAtomicState(t *testing.T) {
 	nativeOnly(t)
 	root := t.TempDir()
-	p := newWindowsPlatform(root)
+	p := auditedWindowsPlatform(t, root)
 	release, ok, err := p.Lock(root)
 	if err != nil || !ok {
 		t.Fatal("first Windows mutex failed")
@@ -65,7 +89,7 @@ func TestWindowsRealSignedUpdateBusyDeferralAndRollback(t *testing.T) {
 	}
 	f.manifest = signedManifest(t, f.key, manifestFor(seedVersionCode+1, f.server.URL, f.data))
 	u, _ := newTestUpdater(t, f)
-	p := newWindowsPlatform(u.Root)
+	p := auditedWindowsPlatform(t, u.Root)
 	u.OS = p
 	u.HealthWait = 3 * time.Second
 	t.Cleanup(func() { stopFixtureProcesses(t, p) })
@@ -113,7 +137,7 @@ func TestWindowsRealSignedUpdateBusyDeferralAndRollback(t *testing.T) {
 func TestWindowsExactProductionEngineChildGUI(t *testing.T) {
 	nativeOnly(t)
 	root := t.TempDir()
-	p := newWindowsPlatform(root)
+	p := auditedWindowsPlatform(t, root)
 	trust := productionTrust()
 	u := &Updater{Root: root, Trust: trust, OS: p, FeedClient: trust.client(2500 * time.Millisecond), DownloadClient: trust.client(60 * time.Second), HealthWait: 25 * time.Second}
 	defer func() {

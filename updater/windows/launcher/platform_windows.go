@@ -57,8 +57,9 @@ func hrError(hr uintptr) error {
 }
 
 type windowsPlatform struct {
-	root  string
-	Owner uintptr
+	root         string
+	Owner        uintptr
+	BeforeLaunch func(string)
 }
 
 func newWindowsPlatform(root string) *windowsPlatform {
@@ -225,7 +226,15 @@ func processPath(pid int) string {
 	return syscall.UTF16ToString(path[:n])
 }
 func (p *windowsPlatform) ProcessMatches(pid int, path string) bool {
-	return pid > 0 && strings.EqualFold(filepath.Clean(processPath(pid)), filepath.Clean(path))
+	if pid <= 0 {
+		return false
+	}
+	actual, err := os.Stat(processPath(pid))
+	if err != nil {
+		return false
+	}
+	expected, err := os.Stat(path)
+	return err == nil && os.SameFile(actual, expected)
 }
 
 func saveAttachment(path, source string) error {
@@ -302,6 +311,9 @@ type shellExecuteInfo struct {
 }
 
 func (p *windowsPlatform) shellLaunch(path string) (uintptr, error) {
+	if p.BeforeLaunch != nil {
+		p.BeforeLaunch(path)
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	hr, _, _ := coInitialize.Call(0, 2)

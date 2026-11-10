@@ -41,6 +41,13 @@ def main():
 }
 '''+txt[end:];gradle.write_text(txt)
     replace_one(gradle,'signingConfig signingConfigs.release','signingConfig signingConfigs.debug')
+    # Flutter debug engine/asset compression exceeds upstream's 1 GiB Gradle
+    # heap on current Android Gradle Plugin. Bound parallel workers and give
+    # the compiler its own 4 GiB heap on the disposable CI runner.
+    props=android/'gradle.properties';proptext=props.read_text()
+    proptext=re.sub(r'^org\.gradle\.jvmargs=.*$', 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError',proptext,flags=re.M)
+    if 'org.gradle.workers.max=' not in proptext:proptext+='\norg.gradle.workers.max=2\n'
+    props.write_text(proptext)
     # CI debug signature is replaced with the private production certificate on our server.
     replace_one(app/'src/main/AndroidManifest.xml','android:label="RustDesk"','android:label="Bakım.TR Yardım"')
     replace_one(app/'src/main/AndroidManifest.xml','android:label="RustDesk Input"','android:label="Bakım.TR Yardım · Kontrol"')

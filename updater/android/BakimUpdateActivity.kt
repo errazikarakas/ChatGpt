@@ -17,7 +17,7 @@ import android.widget.TextView
 import android.widget.Toast
 import kotlin.concurrent.thread
 
-/** Private foreground UI for the ordinary Android installer, never silent install. */
+/** Same-publisher self-update via public Android APIs; normal confirmation remains the fallback. */
 class BakimUpdateActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var sessionId = -1
@@ -31,6 +31,7 @@ class BakimUpdateActivity : Activity() {
         box.addView(TextView(this).apply { text = "Bakım.TR Yardım"; textSize = 23f; gravity = Gravity.CENTER })
         box.addView(TextView(this).apply { text = "Güvenli güncelleme hazırlanıyor…"; textSize = 16f; gravity = Gravity.CENTER; setPadding(0, 24, 0, 0) })
         setContentView(box)
+        BakimUpdater.trace(this, "update_activity_created")
         sessionId = state?.getInt("sessionId", -1) ?: -1
         handler.postDelayed(timeout, 5 * 60 * 1000L)
         if (intent.hasExtra(PackageInstaller.EXTRA_STATUS)) handleStatus()
@@ -42,6 +43,7 @@ class BakimUpdateActivity : Activity() {
 
     private fun prepare() {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            BakimUpdater.trace(this, "source_permission_required")
             Toast.makeText(this, "Güncelleme için Android'de bu kaynağa izin verin.", Toast.LENGTH_LONG).show()
             try { startActivityForResult(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")), 901) }
             catch (_: Exception) { continueCurrent(defer = true) }
@@ -49,16 +51,22 @@ class BakimUpdateActivity : Activity() {
         }
         thread(name = "bakim-apk-verifier") {
             try {
+                BakimUpdater.trace(this, "native_apk_validation_started")
                 val file = BakimUpdater.validate(this, intent.getStringExtra("fileName") ?: "", expectedVersion,
                     intent.getStringExtra("digest") ?: "", intent.getLongExtra("size", 0))
                 if (finishing || isDestroyed) return@thread
+                BakimUpdater.trace(this, "native_apk_validation_passed")
                 val installer = packageManager.packageInstaller
                 val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
                     setAppPackageName(packageName); setSize(file.length())
-                    if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+                    // Public API supports a trusted app updating ITSELF without
+                    // repeat confirmation. No installer identity or admin privilege
+                    // is substituted. OEM/policy/older-device confirmation remains.
+                    if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
                     if (Build.VERSION.SDK_INT >= 33) setPackageSource(PackageInstaller.PACKAGE_SOURCE_DOWNLOADED_FILE)
                 }
                 sessionId = installer.createSession(params)
+                BakimUpdater.trace(this, "native_session_created")
                 if (finishing) { installer.abandonSession(sessionId); return@thread }
                 val callback = Intent(this, BakimUpdateActivity::class.java).apply {
                     action = "tr.bakim.yardim.UPDATE_RESULT"
@@ -75,9 +83,10 @@ class BakimUpdateActivity : Activity() {
                 installer.openSession(sessionId).use { session ->
                     session.openWrite("base.apk", 0, file.length()).use { output -> file.inputStream().use { it.copyTo(output) }; session.fsync(output) }
                     if (finishing) { session.abandon(); return@thread }
+                    BakimUpdater.trace(this, "native_session_committing")
                     session.commit(pending.intentSender)
                 }
-            } catch (_: Exception) { runOnUiThread { continueCurrent(defer = true) } }
+            } catch (error: Exception) { BakimUpdater.trace(this, "native_validation_or_session_failed", error); runOnUiThread { continueCurrent(defer = true) } }
         }
     }
     @Suppress("DEPRECATION")
@@ -85,11 +94,13 @@ class BakimUpdateActivity : Activity() {
         sessionId = intent.getIntExtra("sessionId", sessionId)
         when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                BakimUpdater.trace(this, "system_confirmation_required")
                 val confirmation = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java) else intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 if (confirmation == null) { continueCurrent(defer = true); return }
                 try { startActivityForResult(confirmation, 902) } catch (_: Exception) { continueCurrent(defer = true) }
             }
             PackageInstaller.STATUS_SUCCESS -> {
+                BakimUpdater.trace(this, "native_install_success")
                 try {
                     val current = BakimUpdater.installed(this)
                     require(BakimUpdater.version(current) >= expectedVersion && BakimUpdater.certificate(current) == BakimUpdater.PUBLISHER)
@@ -98,14 +109,14 @@ class BakimUpdateActivity : Activity() {
                     continueCurrent(defer = false)
                 } catch (_: Exception) { continueCurrent(defer = true) }
             }
-            else -> continueCurrent(defer = true)
+            else -> { BakimUpdater.trace(this, "native_install_declined_or_failed"); continueCurrent(defer = true) }
         }
     }
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 901) {
-            if (Build.VERSION.SDK_INT >= 26 && packageManager.canRequestPackageInstalls()) prepare() else continueCurrent(defer = true)
+            if (Build.VERSION.SDK_INT >= 26 && packageManager.canRequestPackageInstalls()) { BakimUpdater.trace(this, "source_permission_granted"); prepare() } else { BakimUpdater.trace(this, "source_permission_declined"); continueCurrent(defer = true) }
         } else if (requestCode == 902 && resultCode == RESULT_CANCELED) continueCurrent(defer = true)
     }
     @Deprecated("Deprecated in Java")

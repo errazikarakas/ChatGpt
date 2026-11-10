@@ -5,18 +5,31 @@ import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.security.MessageDigest
 
 /** Uses Android's own package identity in addition to the signed feed digest. */
+class BakimUpdateValidationException(val reason: String) : Exception(reason)
 object BakimUpdater {
     const val PUBLISHER = "8965892c1419f7bcdead4dc152c8b2916d43e3a8e71521cd7e0ac4d6333e7341"
     const val PACKAGE = "tr.bakim.yardim"
     const val CHANNEL = "bakim.tr/yardim-updater"
     fun preferences(context: Context) = context.getSharedPreferences("bakim-yardim-updater", Context.MODE_PRIVATE)
     fun directory(context: Context) = File(context.cacheDir, "bakim-updates").apply { mkdirs() }
+    fun trace(context: Context, stage: String, error: Exception? = null) {
+        if (!BuildConfig.DEBUG) return
+        val code = if (error is BakimUpdateValidationException) error.reason else error?.javaClass?.simpleName
+        val prefs = preferences(context)
+        val history = (prefs.getString("updateTrace", "") ?: "").takeLast(2000)
+        val edit = prefs.edit().putString("lastUpdateStage", stage).putString("updateTrace", "$history,$stage")
+        if (code != null) edit.putString("lastUpdateError", code)
+        edit.apply()
+        Log.i("BakimUpdater", "stage=$stage" + if (code == null) "" else " error=$code")
+    }
+    private fun verified(ok: Boolean, code: String) { if (!ok) throw BakimUpdateValidationException(code) }
     @Suppress("DEPRECATION")
     fun version(info: PackageInfo): Long = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
     fun flags(): Int = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
@@ -35,16 +48,19 @@ object BakimUpdater {
     }
     @Suppress("DEPRECATION")
     fun validate(context: Context, fileName: String, expectedVersion: Long, digest: String, size: Long): File {
-        require(context.packageName == PACKAGE && expectedVersion in 1..2147483647L)
-        require(fileName == "bakim-$expectedVersion.apk" && Regex("^[0-9a-f]{64}$").matches(digest))
+        verified(context.packageName == PACKAGE && expectedVersion in 1..2147483647L, "invalid_update_identity")
+        verified(fileName == "bakim-$expectedVersion.apk" && Regex("^[0-9a-f]{64}$").matches(digest), "invalid_update_metadata")
         val file = File(directory(context), fileName)
-        require(file.canonicalFile.parentFile == directory(context).canonicalFile && file.isFile)
-        require(file.length() == size && size in 1024..167772160L && sha256(file) == digest)
+        verified(file.canonicalFile.parentFile == directory(context).canonicalFile && file.isFile, "private_apk_missing")
+        verified(file.length() == size && size in 1024..167772160L, "apk_size_mismatch")
+        verified(sha256(file) == digest, "apk_sha256_mismatch")
         val current = installed(context)
-        require(certificate(current) == PUBLISHER && expectedVersion > version(current))
-        val update = context.packageManager.getPackageArchiveInfo(file.absolutePath, flags()) ?: error("APK cannot be parsed")
-        require(update.packageName == PACKAGE && version(update) == expectedVersion && certificate(update) == PUBLISHER)
-        if (Build.VERSION.SDK_INT >= 24) require(update.applicationInfo!!.minSdkVersion <= Build.VERSION.SDK_INT)
+        verified(certificate(current) == PUBLISHER && expectedVersion > version(current), "installed_publisher_or_version_mismatch")
+        val update = context.packageManager.getPackageArchiveInfo(file.absolutePath, flags()) ?: throw BakimUpdateValidationException("apk_parse_failed")
+        verified(update.packageName == PACKAGE, "apk_package_mismatch")
+        verified(version(update) == expectedVersion, "apk_version_mismatch")
+        verified(certificate(update) == PUBLISHER, "apk_publisher_mismatch")
+        if (Build.VERSION.SDK_INT >= 24) verified(update.applicationInfo!!.minSdkVersion <= Build.VERSION.SDK_INT, "apk_sdk_unsupported")
         return file
     }
     fun register(activity: MainActivity, engine: FlutterEngine) {
@@ -59,6 +75,7 @@ object BakimUpdater {
                             "deferUpdatesUntil" to preferences(activity).getLong("deferUntil", 0)))
                     }
                     "install" -> {
+                        trace(activity, "native_install_requested")
                         val fileName = call.argument<String>("fileName") ?: error("Missing APK")
                         val version = (call.argument<Number>("versionCode") ?: error("Missing version")).toLong()
                         val hash = call.argument<String>("sha256") ?: error("Missing checksum")
@@ -71,7 +88,7 @@ object BakimUpdater {
                     }
                     else -> result.notImplemented()
                 }
-            } catch (_: Exception) { result.error("update_unavailable", "Güncelleme daha sonra yeniden denenecek.", null) }
+            } catch (error: Exception) { trace(activity, "native_channel_failed", error); result.error("update_unavailable", "Güncelleme daha sonra yeniden denenecek.", null) }
         }
     }
 }

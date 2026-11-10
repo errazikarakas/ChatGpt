@@ -24,12 +24,12 @@ kotlin=app/'src/main/kotlin/com/carriez/flutter_hbb'
 for name in ['BakimUpdater.kt','BakimUpdateActivity.kt']:shutil.copyfile(assets/name,kotlin/name)
 replace(kotlin/'MainActivity.kt','        super.configureFlutterEngine(flutterEngine)','        super.configureFlutterEngine(flutterEngine)\n        BakimUpdater.register(this, flutterEngine)')
 manifest=app/'src/main/AndroidManifest.xml'
-replace(manifest,'    <uses-permission android:name="android.permission.INTERNET" />','    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />')
+replace(manifest,'    <uses-permission android:name="android.permission.INTERNET" />','    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />')
 replace(manifest,'        <activity\n            android:name=".PermissionRequestTransparentActivity"','        <activity\n            android:name=".BakimUpdateActivity"\n            android:exported="false"\n            android:launchMode="singleTop"\n            android:configChanges="orientation|screenSize|keyboardHidden"\n            android:theme="@android:style/Theme.Material.Light.NoActionBar" />\n\n        <activity\n            android:name=".PermissionRequestTransparentActivity"')
 main=flutter/'lib/main.dart'
 replace(main,"import 'dart:io';","import 'dart:io';\nimport 'bakim/bakim_android_updater.dart';")
 s=main.read_text();start=s.index('void runMobileApp() async {');anchor='  runApp(App());';pos=s.index(anchor,start)+len(anchor)
 s=s[:pos]+"\n  if (isAndroid) { unawaited(BakimAndroidUpdater.checkAtStartup()); }"+s[pos:];main.write_text(s)
 manifest_path=root/'bakim-android-build-manifest.json'
-m=json.loads(manifest_path.read_text());m.update({'versionName':a.version_name,'versionCode':a.version_code,'signedFeedAutoCheck':True,'updateFeed':'https://xn--bakm-nza.tr/yardim-guncelle.php?platform=android','mandatorySystemInstallApproval':True,'publisherCertificateSha256':'8965892c1419f7bcdead4dc152c8b2916d43e3a8e71521cd7e0ac4d6333e7341'});manifest_path.write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
+m=json.loads(manifest_path.read_text());m.update({'versionName':a.version_name,'versionCode':a.version_code,'signedFeedAutoCheck':True,'updateFeed':'https://xn--bakm-nza.tr/yardim-guncelle.php?platform=android','documentedSelfUpdateWithoutUserActionOnApi31':True,'systemInstallApprovalFallbackPreserved':True,'publisherCertificateSha256':'8965892c1419f7bcdead4dc152c8b2916d43e3a8e71521cd7e0ac4d6333e7341'});manifest_path.write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
 print('Signed own-server Android updater installed; system approval and monotonic same-publisher update required')

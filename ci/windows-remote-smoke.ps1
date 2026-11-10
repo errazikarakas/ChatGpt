@@ -90,8 +90,16 @@ if($remote -eq [IntPtr]::Zero){
 }
 for($i=0;$i -lt 20 -and $remote -eq [IntPtr]::Zero;$i++){Start-Sleep 2;$remote=[BakimWindows]::RemoteWindow()}
 if($remote -eq [IntPtr]::Zero){throw 'Remote desktop UI did not appear'}
-# Our server operator accepts only the isolated fixture's request. No password is sent or logged.
-Start-Sleep 100
+# The isolated target operator acknowledges the exact synthetic ID only after
+# accepting the real connection. Never type a marker into an authentication dialog.
+$controllerSha=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($controller))).Replace('-','').ToLowerInvariant()
+$accepted=$false
+for($i=0;$i -lt 90;$i++){
+ try {$ack=Invoke-RestMethod -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?proof='+$controllerSha) -TimeoutSec 10;$accepted=($ack.windowsAcceptedControllerSha256 -eq $controllerSha)} catch {$accepted=$false}
+ if($accepted){break}
+ Start-Sleep 2
+}
+if(-not $accepted){throw 'Isolated target did not acknowledge accepting this synthetic controller'}
 [BakimWindows]::ShowWindow($remote,3)|Out-Null
 [BakimWindows]::SetForegroundWindow($remote)|Out-Null
 Start-Sleep 3
@@ -108,4 +116,11 @@ $bitmap=New-Object System.Drawing.Bitmap($width,$height)
 $graphics=[System.Drawing.Graphics]::FromImage($bitmap);$graphics.CopyFromScreen($r.Left,$r.Top,0,0,$bitmap.Size)
 $bitmap.Save((Join-Path $out 'isolated-remote-desktop.png'),[System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose();$bitmap.Dispose()
-@{remoteWindowStarted=$true;fixtureIdMatched=$true;keyboardMarkerSent=$true;targetIsIsolatedFixture=$true;source='GitHub-hosted Windows runner';connectionEntryMethod=$entryMethod;usesNormalGuiConnectionFlow=$true;requiresIndependentTargetMarkerVerification=$true} | ConvertTo-Json | Set-Content (Join-Path $out 'remote-smoke.json') -Encoding UTF8
+$markerVerified=$false
+for($i=0;$i -lt 45;$i++){
+ try {$ack=Invoke-RestMethod -Uri ('https://xn--bakm-nza.tr/assets/support/test-target.json?markerProof='+$controllerSha) -TimeoutSec 10;$markerVerified=($ack.windowsMarkerControllerSha256 -eq $controllerSha -and $ack.windowsMarkerVerified -eq $true)} catch {$markerVerified=$false}
+ if($markerVerified){break}
+ Start-Sleep 2
+}
+if(-not $markerVerified){throw 'Independent target file did not confirm the remote keyboard marker'}
+@{remoteWindowStarted=$true;fixtureIdMatched=$true;keyboardMarkerSent=$true;targetIsIsolatedFixture=$true;source='GitHub-hosted Windows runner';connectionEntryMethod=$entryMethod;usesNormalGuiConnectionFlow=$true;independentTargetMarkerVerified=$markerVerified;remoteKeyboardControlVerified=$true} | ConvertTo-Json | Set-Content (Join-Path $out 'remote-smoke.json') -Encoding UTF8

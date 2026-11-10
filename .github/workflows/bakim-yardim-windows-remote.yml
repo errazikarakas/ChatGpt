@@ -1,0 +1,44 @@
+name: Bakım.TR Yardım Windows actual desktop control
+'on':
+  push:
+    branches:
+    - bakim-yardim-build
+    paths:
+    - ci/windows-remote-trigger.json
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: bakim-yardim-windows-actual-control
+  cancel-in-progress: true
+jobs:
+  real-control:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Download the exact already verified final EXE
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: '$trigger=Get-Content ci/windows-remote-trigger.json -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $build=[string]$trigger.runId
+
+        if($build -notmatch ''^\d{8,15}$''){throw ''Invalid exact final build reference''}
+
+        gh run download $build --repo errazikarakas/ChatGpt --name Bakim-TR-Yardim-Windows-Final --dir app
+
+        if($LASTEXITCODE -ne 0){throw ''Final artifact unavailable''}
+
+        if((Get-FileHash app/Bakim-TR-Yardim.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $trigger.exeSha256){throw ''Final executable hash mismatch''}'
+    - name: Verify real screen and keyboard control through the normal ID field
+      run: powershell -ExecutionPolicy Bypass -File ci/windows-remote-smoke.ps1 -Executable app/Bakim-TR-Yardim.exe -OutputDirectory real-control-proof
+    - name: Upload actual control proof
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bakim-yardim-windows-actual-control
+        path: real-control-proof/*
+        retention-days: 14

@@ -71,11 +71,8 @@ jobs:
 
         '
     - name: Upstream Flutter compatibility patch
-      run: 'git -C "$(dirname "$(dirname "$(command -v flutter)")")" apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
-
-        flutter config --no-analytics
-
-        '
+      run: "sdk=\"$(dirname \"$(dirname \"$(command -v flutter)\")\")\"\npatch=\"$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff\"\nif git -C \"$sdk\" apply --check \"$patch\"; then\n\
+        \  git -C \"$sdk\" apply \"$patch\"\nelse\n  git -C \"$sdk\" apply --reverse --check \"$patch\"\nfi\nflutter config --no-analytics"
     - name: Build real Android application
       run: 'cd flutter
 
@@ -156,11 +153,8 @@ jobs:
 
         '
     - name: Upstream Flutter compatibility patch
-      run: 'git -C "$(dirname "$(dirname "$(command -v flutter)")")" apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
-
-        flutter config --no-analytics
-
-        '
+      run: "sdk=\"$(dirname \"$(dirname \"$(command -v flutter)\")\")\"\npatch=\"$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff\"\nif git -C \"$sdk\" apply --check \"$patch\"; then\n\
+        \  git -C \"$sdk\" apply \"$patch\"\nelse\n  git -C \"$sdk\" apply --reverse --check \"$patch\"\nfi\nflutter config --no-analytics"
     - name: Build actual x86_64 emulator test APK
       run: 'cd flutter
 

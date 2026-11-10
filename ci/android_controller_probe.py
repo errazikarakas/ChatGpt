@@ -17,7 +17,7 @@ start=time.time();error=None;frame={}
 try:
  with urllib.request.urlopen(a.target_url,timeout=25) as r:target=json.load(r)
  target_id=str(target['targetId'])
- if not re.fullmatch(r'[0-9]{6,14}',target_id):raise RuntimeError('Isolated target identity invalid')
+ if not re.fullmatch(r'[A-Za-z0-9_-]{6,64}',target_id):raise RuntimeError('Isolated target identity invalid')
  adb('wait-for-device',timeout=60);adb('logcat','-c');adb('install','-r','-t',a.apk,timeout=90)
  adb('shell','pm','grant',PACKAGE,'android.permission.POST_NOTIFICATIONS',check=False)
  adb('shell','am','start','-W','-n',PACKAGE+'/com.carriez.flutter_hbb.MainActivity')
@@ -37,7 +37,9 @@ try:
  with urllib.request.urlopen(announce,timeout=20) as r:r.read()
  report['controllerPreannounced']=True
  time.sleep(8)
- uri='rustdesk://'+target_id+'?relay=1'
+ # The normal /connect/<id> form preserves custom mixed-case IDs in the path;
+ # URI authority normalization would lowercase a custom target ID.
+ uri='rustdesk://connect/'+target_id+'?relay=1'
  adb('shell','am','start','-W','-a','android.intent.action.VIEW','-d',uri,'-n',PACKAGE+'/com.carriez.flutter_hbb.MainActivity')
  report['normalDeepLinkUsed']=True
  while time.time()-start<a.timeout:

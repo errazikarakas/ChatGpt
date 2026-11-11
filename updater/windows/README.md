@@ -16,3 +16,5 @@ Go Ed25519: https://pkg.go.dev/crypto/ed25519
 Windows yürütme API: https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw
 
 CI katalog kapısı: PowerShell FILE-discovery sonucu ayrıca gözlemlenir; kendi kataloğunun embedded imzası/sertifika parmak izi, SignTool /c dosya üyeliği ve Windows native SignTool /a /hash SHA256 /pa otomatik katalog güveni zorunludur. Bu API ayrımı exact EXE/seed baytlarını veya MotW bilgisini değiştirmez.
+
+Native yaşam döngüsü kapısı: C# good/bad ve gerçek sonraki Go başlatıcı test kopyaları geçici CI yayıncısıyla embedded Authenticode imzalanır; Ed25519 test manifesti imzalamadan sonraki SHA256 üstünden üretilir. PE kod/veri prefixi yalnız 12 imza metadata baytı maskelenerek SHA256 ile aynı kalmalıdır. Üretim Go başlatıcısı ve d9ec seed bu işlemden geçmez. Gerçek update/rollback/mutex/aktif süreç/exact-child ACK testleri zorunludur; exact imzasız tam uygulama normal OS açılışı ayrı 45sn gözlemdir ve OS onayı beklemesi uygulama fonksiyon başarısı diye sunulmaz.

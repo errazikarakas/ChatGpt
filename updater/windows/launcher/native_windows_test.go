@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -26,7 +27,11 @@ func auditedWindowsPlatform(t *testing.T, root string) *windowsPlatform {
 	p := newWindowsPlatform(root)
 	p.Owner = nativeTestOwner(t)
 	p.BeforeLaunch = func(path string) {
-		ciCatalog(t, path)
+		if os.Getenv("BAKIM_CI_SIGN_SCRIPT") != "" && checkedFile(path, seedSHA256, seedSize) != nil {
+			ciFixtureAction(t, "Verify", path)
+		} else {
+			ciCatalog(t, path)
+		}
 		audit := os.Getenv("BAKIM_CI_PENDING")
 		if audit == "" {
 			t.Fatal("CI pending launch audit missing")
@@ -59,6 +64,22 @@ func ciCatalog(t *testing.T, path string) {
 	command := exec.Command("pwsh.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", "Add", "-File", path, "-ProofDirectory", filepath.Dir(os.Getenv("BAKIM_CI_PENDING")))
 	if result, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("ephemeral publisher catalog registration failed: %v\n%s", err, result)
+	}
+}
+
+// Signing is confined to disposable fixture source images, before their
+// signed-update manifest is constructed. The production launcher is untouched.
+func ciFixtureAction(t *testing.T, action, path string) {
+	t.Helper()
+	script := os.Getenv("BAKIM_CI_SIGN_SCRIPT")
+	if script == "" {
+		t.Fatal("disposable fixture signer missing")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "pwsh.exe", "-NoProfile", "-NonInteractive", "-File", script, "-Action", action, "-File", path, "-ProofDirectory", filepath.Dir(os.Getenv("BAKIM_CI_PENDING")))
+	if result, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("disposable fixture %s failed: %v\n%s", action, err, result)
 	}
 }
 

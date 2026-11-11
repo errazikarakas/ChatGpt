@@ -48,6 +48,7 @@ func TestWindowsActualLauncherDelegationAndExactChildRollback(t *testing.T) {
 	if result, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("disposable actual launcher compilation failed: %v\n%s", err, result)
 	}
+	ciFixtureAction(t, "Sign", output)
 	next, err := os.ReadFile(output)
 	if err != nil {
 		t.Fatal(err)

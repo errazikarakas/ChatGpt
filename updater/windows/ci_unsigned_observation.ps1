@@ -1,9 +1,9 @@
 # CI-only bounded observation. The parent enforces the outer 45-second deadline.
-param([string]$File,[string]$ProofDirectory,[int]$ObserveSeconds=20)
+param([string]$File,[string]$ProofDirectory,[int]$ObserveSeconds=20,[string]$ReportName='unsigned-bootstrap-observation.json',[switch]$TemporaryReputationProfile)
 $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:BAKIM_NATIVE_TESTS -ne '1'){exit 12}
-$reportPath=Join-Path $ProofDirectory 'unsigned-bootstrap-observation.json'
-$report=@{observationalOnly=$true;coreTestResultUnaffected=$true;exactUnsignedBootstrapAttempted=$true;normalShellReturned=$false;realUnicodeEngineGuiObserved=$false;outcome='pending';callerPid=$PID;productionSecuritySettingsChanged=$false;smartScreenDefenderPoliciesChanged=$false}
+$reportPath=Join-Path $ProofDirectory $ReportName
+$report=@{observationalOnly=(-not $TemporaryReputationProfile);coreTestResultUnaffected=(-not $TemporaryReputationProfile);exactUnsignedBootstrapAttempted=$true;normalShellReturned=$false;realUnicodeEngineGuiObserved=$false;outcome='pending';callerPid=$PID;productionSecuritySettingsChanged=$false;smartScreenDefenderPoliciesChanged=[bool]$TemporaryReputationProfile;ciTemporaryReputationProfile=[bool]$TemporaryReputationProfile;DefenderAVChanged=$false}
 function Save-Observation {$report|ConvertTo-Json|Set-Content -LiteralPath $reportPath -Encoding UTF8}
 Save-Observation
 try {

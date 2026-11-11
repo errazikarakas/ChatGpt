@@ -15,17 +15,21 @@ $env:BAKIM_CI_PENDING=Join-Path $proof 'ci-pending-launch.json'
 Remove-Item Env:BAKIM_CI_CATALOG_SCRIPT -ErrorAction SilentlyContinue
 $publisher=Join-Path $base 'ci_trusted_publisher.ps1'
 $signer=Join-Path $base 'ci_sign_fixture.ps1'
-$env:BAKIM_CI_SIGN_SCRIPT=$signer
+$profile=Join-Path $base 'ci_reputation_profile.ps1'
+$profileMode=$env:BAKIM_CI_REPUTATION_PROFILE -eq '1'
+Remove-Item Env:BAKIM_CI_SIGN_SCRIPT -ErrorAction SilentlyContinue
+if(-not $profileMode){$env:BAKIM_CI_SIGN_SCRIPT=$signer}
 $canonical=Join-Path $base 'release/Bakim-TR-Yardim.exe'
 $canonicalSha=(Get-FileHash $canonical -Algorithm SHA256).Hash.ToLowerInvariant()
 $canonicalSeed=Join-Path $base 'launcher/seed/engine.exe'
 $expectedSeed='d9ec96f4c8b6fa14e95e5aec4dc8998c84072ec470f088bd6b84f481092835a1'
 if((Get-FileHash $canonicalSeed -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedSeed){throw 'Original production seed changed'}
 $approver=$null;$observer=$null
-& $publisher -Action Initialize -ProofDirectory $proof
 try {
- foreach($sourceFixture in @($env:BAKIM_FIXTURE_GOOD,$env:BAKIM_FIXTURE_BAD)){
-  & $signer -Action Sign -File $sourceFixture -ProofDirectory $proof
+ if($profileMode){& $profile -Action Apply -ProofDirectory $proof}
+ else {
+  & $publisher -Action Initialize -ProofDirectory $proof
+  foreach($sourceFixture in @($env:BAKIM_FIXTURE_GOOD,$env:BAKIM_FIXTURE_BAD)){& $signer -Action Sign -File $sourceFixture -ProofDirectory $proof}
  }
  $helper=Join-Path $base 'ci_approve_own_fixtures.ps1'
  $tokens=$null;$parseErrors=$null
@@ -38,12 +42,32 @@ try {
  try {
   # Mandatory native lifecycle gate uses trusted embedded-signed TEST copies.
   # Canonical raw engine GUI security consent is observed separately below.
-  go test -v -count=1 -timeout=2m -skip TestWindowsExactProductionEngineChildGUI ./... 2>&1 | Tee-Object -FilePath (Join-Path $proof 'native-tests.txt')
+  $goArguments=@('test','-v','-count=1','-timeout=3m')
+  if(-not $profileMode){$goArguments+=@('-skip','TestWindowsExactProductionEngineChildGUI')}
+  $goArguments+='./...'
+  & go @goArguments 2>&1 | Tee-Object -FilePath (Join-Path $proof 'native-tests.txt')
   if($LASTEXITCODE -ne 0){throw 'Mandatory Windows native updater lifecycle tests failed'}
  } finally {Pop-Location}
- $summary=@{ok=$true;okScope='real-native-update-rollback-selfdelegation-with-embedded-signed-test-copies';launcherVersion='1.0.0';originalEnginePreserved=$true;productionLauncherPreserved=$true;signedUpdateAndHashChecks=$true;nativeAtomicVersionUpdate=$true;nativeRollback=$true;busySessionPreserved=$true;singleUpdater=$true;launcherSelfDelegation=$true;exactChildPidAndReadinessAck=$true;launcherEarlyExitRollback=$true;knownNewVersionStartsOnFirstOpen=$true;motwPreserved=$true;productionSecuritySettingsChanged=$false;ciTemporaryTrustStoresChanged=$true;smartScreenDefenderPoliciesChanged=$false;productionPublisherCertificateAvailable=$false;productionWindowsWarningsRemoved=$false;fixtureExecutablePrefixPreservedExceptAuthenticode=$true;canonicalUnsignedGuiMandatoryGate=$false;realUnicodeChildGuiStarted=$false}
+ $scope=if($profileMode){'exact-raw-app-native-lifecycle-in-temporary-ci-reputation-profile'}else{'native-lifecycle-with-embedded-signed-test-copies'}
+ $summary=@{ok=$true;okScope=$scope;launcherVersion='1.0.0';originalEnginePreserved=$true;productionLauncherPreserved=$true;signedUpdateAndHashChecks=$true;nativeAtomicVersionUpdate=$true;nativeRollback=$true;busySessionPreserved=$true;singleUpdater=$true;launcherSelfDelegation=$true;exactChildPidAndReadinessAck=$true;launcherEarlyExitRollback=$true;knownNewVersionStartsOnFirstOpen=$true;motwPreserved=$true;productionSecuritySettingsChanged=$false;ciTemporaryTrustStoresChanged=(-not $profileMode);ciTemporaryReputationPolicyChanged=$profileMode;ciReputationPolicyRestored=$false;DefenderAVSettingsChanged=$false;productionPublisherCertificateAvailable=$false;productionWindowsWarningsRemoved=$false;fixtureExecutablePrefixPreservedExceptAuthenticode=(-not $profileMode);allTestExecutablesRawOriginal=$profileMode;canonicalRawEngineGuiUnderTestProfile=$profileMode;canonicalUnsignedGuiMandatoryGate=$false;realUnicodeChildGuiStarted=$false}
  $summary|ConvertTo-Json|Set-Content (Join-Path $proof 'windows-updater-proof.json') -Encoding UTF8
- # Normal OS launch of the raw deliverable is a separate, strict observation.
+ # Exercise the exact full deliverable under the declared CI test condition.
+ if($profileMode){
+  Set-Content -LiteralPath ($canonical+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
+  $functional=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+(Join-Path $base 'ci_unsigned_observation.ps1')+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"'),'-ReportName','exact-bootstrap-ci-profile.json','-TemporaryReputationProfile') -WindowStyle Hidden -PassThru
+  $null=$functional.Handle
+  if(-not $functional.WaitForExit(45000)){$functional.Kill();throw 'Exact raw bootstrap CI-profile launch deadline exceeded'}
+  $functionalProof=Get-Content (Join-Path $proof 'exact-bootstrap-ci-profile.json') -Raw|ConvertFrom-Json
+  if(-not $functionalProof.realUnicodeEngineGuiObserved){throw 'Exact raw bootstrap did not start the real GUI under the declared CI test profile'}
+  $summary.exactRawBootstrapGuiUnderTestProfile=$true
+  Start-Sleep -Seconds 2
+  Get-Process|Where-Object {$_.ProcessName -eq 'Bakım.TR Yardım'}|Stop-Process -Force -ErrorAction SilentlyContinue
+  & $profile -Action Restore -ProofDirectory $proof
+  $summary.ciReputationPolicyRestored=$true
+  $summary|ConvertTo-Json|Set-Content (Join-Path $proof 'windows-updater-proof.json') -Encoding UTF8
+ }
+ # Normal restored-policy launch is a separate bounded observation.
+
  Set-Content -LiteralPath ($canonical+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
  $worker=Join-Path $base 'ci_unsigned_observation.ps1'
  $observer=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+$worker+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $proof 'unsigned-observer-stderr.txt') -RedirectStandardOutput (Join-Path $proof 'unsigned-observer-stdout.txt')
@@ -65,6 +89,7 @@ try {
 } finally {
  if($observer -and -not $observer.HasExited){$observer.Kill()}
  if($approver){Stop-Process -Id $approver.Id -Force -ErrorAction SilentlyContinue}
- & $publisher -Action Cleanup -ProofDirectory $proof
+ if($profileMode){& $profile -Action Restore -ProofDirectory $proof}
+ else {& $publisher -Action Cleanup -ProofDirectory $proof}
  Get-Process|Where-Object {$_.ProcessName -eq 'Bakım.TR Yardım'}|Stop-Process -Force -ErrorAction SilentlyContinue
 }

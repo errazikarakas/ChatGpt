@@ -1,0 +1,44 @@
+name: Bakım.TR Yardım compiled Windows review candidate
+'on':
+  push:
+    branches: [bakim-yardim-build]
+    paths:
+      - updater/windows-review/**
+      - .github/workflows/bakim-yardim-windows-review.yml
+permissions:
+  contents: read
+concurrency:
+  group: bakim-yardim-windows-review-candidate
+  cancel-in-progress: true
+jobs:
+  compiled-review-candidate:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.4
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify original seed and branded resource source
+        run: |
+          python -m pip install Pillow
+          python updater/windows/prepare_build.py
+      - name: Compile one unchanged production launcher for review
+        run: ./updater/windows/build_windows.ps1
+      - name: Validate raw PE, exact embedded seed, public config and source hashes
+        run: python updater/windows-review/validate_candidate.py
+      - name: Upload explicitly unverified review candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: bakim-yardim-windows-review-candidate
+          path: updater/windows-review/release/*
+          retention-days: 14

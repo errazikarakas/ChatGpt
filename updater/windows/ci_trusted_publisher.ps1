@@ -22,7 +22,9 @@ function Write-Proof($Data) {
   $Data.utc = [DateTime]::UtcNow.ToString('o')
   $Data.labOnly = $true
   $Data.runId = $env:GITHUB_RUN_ID
-  $Data.policyChanged = $false
+  $Data.productionSecuritySettingsChanged = $false
+  $Data.ciTemporaryTrustStoresChanged = $true
+  $Data.smartScreenDefenderPoliciesChanged = $false
   $Data.productionSigning = $false
   Add-Content -LiteralPath $proofFile -Value ($Data | ConvertTo-Json -Compress -Depth 6) -Encoding UTF8
 }
@@ -182,12 +184,17 @@ try {
           Invoke-SignTool -Arguments @('catdb',$ownedCatalog.path)
         }
       }
-      $signature = Assert-Signature $path
-      Invoke-SignTool -Arguments @('verify','/a','/as','/hash','SHA256','/pa',$path)
+      # PowerShell's FILE catalog discovery can report None while Windows'
+      # native catalog verifier succeeds. Verify our catalog's embedded signer
+      # and its independently proven file membership, then require native OS
+      # SHA256 automatic catalog trust. This never changes the executable.
+      $ownedCatalog = @($script:state.catalogs | Where-Object {$_.fileSha256 -eq $before})[0]
+      $signature = Assert-Signature $ownedCatalog.path
+      Invoke-SignTool -Arguments @('verify','/a','/hash','SHA256','/pa',$path)
       $after = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
       $motwAfter = Get-MotwDigest $path
       if ($before -ne $after -or $motwBefore -ne $motwAfter) { throw 'Executable bytes or Mark-of-the-Web changed during catalog registration.' }
-      Write-Proof @{ action='Add'; fileName=$item.Name; sha256=$after; bytes=[long]$item.Length; thumbprint=$script:state.thumbprint; status=[string]$signature.Status; executableUnchanged=$true; motwUnchanged=$true; motwPresent=($motwAfter -ne 'absent'); reused=($existing.Count -gt 0) }
+      Write-Proof @{ action='Add'; fileName=$item.Name; sha256=$after; bytes=[long]$item.Length; thumbprint=$script:state.thumbprint; catalogSignatureStatus=[string]$signature.Status; fileSignatureDiscoveryStatus=[string]$lookup.status; nativeWindowsCatalogTrustVerified=$true; executableUnchanged=$true; motwUnchanged=$true; motwPresent=($motwAfter -ne 'absent'); reused=($existing.Count -gt 0) }
       Write-Output ('Catalog preflight valid; executable SHA256 and MOTW preserved: ' + $item.Name)
     } else {
       $cleanupErrors = @()

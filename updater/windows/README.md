@@ -14,3 +14,5 @@ Microsoft: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-
 Go Ed25519: https://pkg.go.dev/crypto/ed25519
 
 Windows yürütme API: https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw
+
+CI katalog kapısı: PowerShell FILE-discovery sonucu ayrıca gözlemlenir; kendi kataloğunun embedded imzası/sertifika parmak izi, SignTool /c dosya üyeliği ve Windows native SignTool /a /hash SHA256 /pa otomatik katalog güveni zorunludur. Bu API ayrımı exact EXE/seed baytlarını veya MotW bilgisini değiştirmez.

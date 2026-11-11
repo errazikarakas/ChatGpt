@@ -54,7 +54,7 @@ try {
  # Exercise the exact full deliverable under the declared CI test condition.
  if($profileMode){
   Set-Content -LiteralPath ($canonical+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
-  $functional=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+(Join-Path $base 'ci_unsigned_observation.ps1')+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"'),'-ReportName','exact-bootstrap-ci-profile.json','-TemporaryReputationProfile') -WindowStyle Hidden -PassThru
+  $functional=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+(Join-Path $base 'ci_unsigned_observation.ps1')+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"'),'-ReportName','exact-bootstrap-ci-profile.json','-TemporaryReputationProfile') -PassThru
   $null=$functional.Handle
   if(-not $functional.WaitForExit(45000)){$functional.Kill();throw 'Exact raw bootstrap CI-profile launch deadline exceeded'}
   $functionalProof=Get-Content (Join-Path $proof 'exact-bootstrap-ci-profile.json') -Raw|ConvertFrom-Json
@@ -70,7 +70,7 @@ try {
 
  Set-Content -LiteralPath ($canonical+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
  $worker=Join-Path $base 'ci_unsigned_observation.ps1'
- $observer=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+$worker+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"')) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $proof 'unsigned-observer-stderr.txt') -RedirectStandardOutput (Join-Path $proof 'unsigned-observer-stdout.txt')
+ $observer=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+$worker+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"')) -PassThru -RedirectStandardError (Join-Path $proof 'unsigned-observer-stderr.txt') -RedirectStandardOutput (Join-Path $proof 'unsigned-observer-stdout.txt')
  $null=$observer.Handle
  if(-not $observer.WaitForExit(45000)){
   $observer.Kill();$null=$observer.WaitForExit(5000)
@@ -89,7 +89,13 @@ try {
 } finally {
  if($observer -and -not $observer.HasExited){$observer.Kill()}
  if($approver){Stop-Process -Id $approver.Id -Force -ErrorAction SilentlyContinue}
- if($profileMode){& $profile -Action Restore -ProofDirectory $proof}
+ if($profileMode){
+  & $profile -Action Restore -ProofDirectory $proof
+  if(Get-Variable -Name summary -Scope Local -ErrorAction SilentlyContinue){
+   $summary.ciReputationPolicyRestored=$true
+   $summary|ConvertTo-Json|Set-Content (Join-Path $proof 'windows-updater-proof.json') -Encoding UTF8
+  }
+ }
  else {& $publisher -Action Cleanup -ProofDirectory $proof}
  Get-Process|Where-Object {$_.ProcessName -eq 'Bakım.TR Yardım'}|Stop-Process -Force -ErrorAction SilentlyContinue
 }

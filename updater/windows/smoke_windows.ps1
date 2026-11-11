@@ -54,7 +54,7 @@ try {
  # Exercise the exact full deliverable under the declared CI test condition.
  if($profileMode){
   Set-Content -LiteralPath ($canonical+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
-  $functional=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+(Join-Path $base 'ci_unsigned_observation.ps1')+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"'),'-ReportName','exact-bootstrap-ci-profile.json','-TemporaryReputationProfile') -PassThru
+  $functional=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+(Join-Path $base 'ci_unsigned_observation.ps1')+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"'),'-ReportName','exact-bootstrap-ci-profile.json','-ExpectedDriverPid',[string]$PID,'-TemporaryReputationProfile') -PassThru -RedirectStandardOutput (Join-Path $proof 'functional-observer-stdout.txt') -RedirectStandardError (Join-Path $proof 'functional-observer-stderr.txt')
   $null=$functional.Handle
   if(-not $functional.WaitForExit(45000)){$functional.Kill();throw 'Exact raw bootstrap CI-profile launch deadline exceeded'}
   $functionalProof=Get-Content (Join-Path $proof 'exact-bootstrap-ci-profile.json') -Raw|ConvertFrom-Json
@@ -70,7 +70,7 @@ try {
 
  Set-Content -LiteralPath ($canonical+':Zone.Identifier') -Encoding ASCII -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://xn--bakm-nza.tr/yardim-indir.php?platform=windows"
  $worker=Join-Path $base 'ci_unsigned_observation.ps1'
- $observer=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+$worker+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"')) -PassThru -RedirectStandardError (Join-Path $proof 'unsigned-observer-stderr.txt') -RedirectStandardOutput (Join-Path $proof 'unsigned-observer-stdout.txt')
+ $observer=Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',('"'+$worker+'"'),'-File',('"'+$canonical+'"'),'-ProofDirectory',('"'+$proof+'"'),'-ExpectedDriverPid',[string]$PID) -PassThru -RedirectStandardError (Join-Path $proof 'unsigned-observer-stderr.txt') -RedirectStandardOutput (Join-Path $proof 'unsigned-observer-stdout.txt')
  $null=$observer.Handle
  if(-not $observer.WaitForExit(45000)){
   $observer.Kill();$null=$observer.WaitForExit(5000)

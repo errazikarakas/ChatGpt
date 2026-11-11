@@ -96,11 +96,12 @@ function Refresh-Known {
  $script:processInfo=@{};try{foreach($p in Get-CimInstance Win32_Process -ErrorAction Stop){$script:processInfo[[int]$p.ProcessId]=$p}}catch{}
 }
 function Trusted-Caller([int]$ProcessId){
- if($script:driverIdentity -and $ProcessId -eq $script:driverIdentity.processId){
-  try{$driver=Get-Process -Id $ProcessId -ErrorAction Stop;if($driver.StartTime.ToUniversalTime().Ticks -eq $script:driverIdentity.startTicks){return $true}}catch{}
- }
-
  for($depth=0;$depth -lt 5 -and $ProcessId -gt 0;$depth++){
+  # Validate the exact registered driver at every visited ancestor, including
+  # a directly-created observer worker. PID reuse cannot match StartTime.
+  if($script:driverIdentity -and $ProcessId -eq $script:driverIdentity.processId){
+   try{$driver=Get-Process -Id $ProcessId -ErrorAction Stop;if($driver.StartTime.ToUniversalTime().Ticks -eq $script:driverIdentity.startTicks){return $true}}catch{}
+  }
   $p=$script:processInfo[$ProcessId];if(-not $p){return $false}
   if($p.Name -match '\.test\.exe$' -and $p.ExecutablePath -match '\\go-build[^\\]+\\'){return $true}
   foreach($known in $script:candidates){if($p.ExecutablePath -and ([BakimCiConsent]::LongPath([string]$p.ExecutablePath) -ieq $known.path)){return $true}}

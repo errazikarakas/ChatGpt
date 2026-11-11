@@ -60,7 +60,7 @@ public static class BakimCiConsent {
  public static Node[] Windows(){var l=new List<Node>();EnumWindows((h,a)=>{if(IsWindowVisible(h))l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
  public static Node[] AllWindows(){var l=new List<Node>();EnumWindows((h,a)=>{l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
  public static Node[] Children(long p){var l=new List<Node>();EnumChildWindows(new IntPtr(p),(h,a)=>{l.Add(Read(h));return true;},IntPtr.Zero);return l.ToArray();}
- public static uint Process(long h){uint p;GetWindowThreadProcessId(new IntPtr(h),out p);return p;}
+ public static object Process(long h){uint p;GetWindowThreadProcessId(new IntPtr(h),out p);return (object)(int)p;}
  public static string LongPath(string p){var b=new StringBuilder(32768);return GetLongPathName(p,b,(uint)b.Capacity)>0?b.ToString():p;}
  public static string ShortPath(string p){var b=new StringBuilder(32768);return GetShortPathName(p,b,(uint)b.Capacity)>0?b.ToString():p;}
 }
